@@ -1,0 +1,152 @@
+### ClearWood Furnitures — Prompt 4: media
+### VS Code REST Client. Run the requests top-to-bottom; the @variables carry state forward.
+### Session cookies are handled by the REST Client automatically; CSRF is echoed by hand.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+
+### 1. Sign in to the admin realm (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@clearwood.local",
+  "password": "ChangeMe@12345"
+}
+
+###
+@csrf = {{adminLogin.response.headers.$['set-cookie'][2]}}
+
+### 2. What will the server accept? (limits, rendition ladder, active driver)
+GET {{api}}/admin/media/config
+
+### 3. Upload a file.
+### REST Client builds the multipart body from the boundary below — point the path at any
+### local image. `files` is the field name; repeat the part to upload several at once.
+# @name upload
+POST {{api}}/admin/media/upload
+X-CSRF-Token: {{csrf}}
+Content-Type: multipart/form-data; boundary=ClearWoodBoundary
+
+--ClearWoodBoundary
+Content-Disposition: form-data; name="folderPath"
+
+products
+--ClearWoodBoundary
+Content-Disposition: form-data; name="files"; filename="sample.png"
+Content-Type: image/png
+
+< ./sample.png
+--ClearWoodBoundary--
+
+###
+@mediaId = {{upload.response.body.data.uploaded[0].media.id}}
+
+### 4. Re-uploading the same bytes returns the existing asset with deduplicated: true.
+
+### 5. Browse the library (R5 pagination meta, filters, search)
+GET {{api}}/admin/media?page=1&limit=20&status=READY&sort=createdAt&order=desc
+
+### 6. Search by name, alt text or tag
+GET {{api}}/admin/media?q=teak
+
+### 7. Full detail, including every rendition and every usage
+GET {{api}}/admin/media/{{mediaId}}
+
+### 8. Edit the metadata an editor cares about
+PATCH {{api}}/admin/media/{{mediaId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "altText": "Teak sideboard in a sunlit living room",
+  "title": "Teak sideboard",
+  "tags": ["teak", "storage"],
+  "focalPoint": { "x": 45, "y": 35 }
+}
+
+### 9. Invalid focal point → 422 with field details (R2)
+PATCH {{api}}/admin/media/{{mediaId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "focalPoint": { "x": 400, "y": -5 } }
+
+### 10. The media folder tree (system folders cannot be renamed or deleted)
+GET {{api}}/admin/media-folders
+
+### 11. Pick a product to attach the asset to
+# @name products
+GET {{api}}/admin/catalog/categories?limit=1
+
+### Replace this with a real product id from your seed (see /api/v1/catalog/categories/{slug}).
+@productId = REPLACE_WITH_PRODUCT_ID
+
+### 12. Attach it to a product gallery
+POST {{api}}/admin/products/{{productId}}/media
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "items": [
+    { "mediaId": "{{mediaId}}", "role": "GALLERY", "deviceTarget": "ALL" }
+  ]
+}
+
+### 13. The current gallery links for that product
+GET {{api}}/admin/products/{{productId}}/media
+
+### 14. Reorder the gallery (positions are rewritten in the order given)
+PATCH {{api}}/admin/products/{{productId}}/media/reorder
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "items": [
+    { "id": "REPLACE_WITH_PRODUCT_MEDIA_ID", "position": 0 }
+  ]
+}
+
+### 15. The public gallery — no auth, resolved ordering, variant/colour/device aware
+GET {{api}}/catalog/products/teak-sideboard/gallery
+
+### 16. Narrowed to one variant
+GET {{api}}/catalog/products/teak-sideboard/gallery?variantId=REPLACE_WITH_VARIANT_ID&device=MOBILE
+
+### 17. Hard delete is refused while the asset is referenced → 409 MEDIA_IN_USE
+DELETE {{api}}/admin/media/{{mediaId}}/permanent
+X-CSRF-Token: {{csrf}}
+
+### 18. …and succeeds with ?force=true, which detaches every usage first (audited as CRITICAL)
+DELETE {{api}}/admin/media/{{mediaId}}/permanent?force=true
+X-CSRF-Token: {{csrf}}
+
+### 19. Soft delete / restore (D6 — the row and the files survive)
+DELETE {{api}}/admin/media/{{mediaId}}
+X-CSRF-Token: {{csrf}}
+
+###
+POST {{api}}/admin/media/{{mediaId}}/restore
+X-CSRF-Token: {{csrf}}
+
+### 20. Regenerate renditions after changing the preset table
+POST {{api}}/admin/media/{{mediaId}}/reprocess
+X-CSRF-Token: {{csrf}}
+
+### 21. Bulk move to trash
+POST {{api}}/admin/media/bulk-delete
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "ids": ["{{mediaId}}"] }
+
+### 22. Orphan report — dry run only, never deletes
+GET {{api}}/admin/media/gc
+
+### 23. Presigned upload: 501 on the local driver, a real ticket on S3
+POST {{api}}/admin/media/presign
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "fileName": "hero.jpg", "contentType": "image/jpeg", "sizeBytes": 812345 }

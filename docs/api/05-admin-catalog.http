@@ -1,0 +1,293 @@
+### ClearWood Furnitures — Prompt 5: admin catalog
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+
+### 1. Sign in (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@clearwood.local",
+  "password": "ChangeMe@12345"
+}
+
+###
+@csrf = {{adminLogin.response.headers.$['set-cookie'][2]}}
+
+### 2. The admin tree (inactive rows included)
+# @name tree
+GET {{api}}/admin/catalog/categories/tree
+
+### Pick the "Sofas" root from the tree response.
+@sofasId = {{tree.response.body.data.0.id}}
+
+### 3. Create "Recliner Sofas" under Sofas
+# @name newCategory
+POST {{api}}/admin/catalog/categories
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "name": "Recliner Sofas",
+  "parentId": "{{sofasId}}",
+  "kind": "STANDARD",
+  "showInMenu": true,
+  "shortDescription": "Motorised and manual recliners in fabric and leather."
+}
+
+###
+@categoryId = {{newCategory.response.body.data.id}}
+@categoryVersion = {{newCategory.response.body.data.version}}
+
+### 4. The public tree reflects it immediately — no restart, no cache flush
+GET {{api}}/catalog/categories/tree
+
+### 5. Rename it. `version` is mandatory: a stale value returns 409 STALE_RESOURCE.
+PATCH {{api}}/admin/catalog/categories/{{categoryId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "name": "Recliner Sofas & Loungers", "version": {{categoryVersion}} }
+
+### 6. Re-sending the SAME version now fails — proof of optimistic locking
+PATCH {{api}}/admin/catalog/categories/{{categoryId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "name": "Should not apply", "version": {{categoryVersion}} }
+
+### 7. Any slug change left a 301 behind
+GET {{api}}/admin/catalog/categories/{{categoryId}}/redirects
+
+### 8. Move it (path and depth are recomputed for the whole subtree)
+POST {{api}}/admin/catalog/categories/{{categoryId}}/move
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "parentId": null, "position": 0, "version": 1 }
+
+### 9. Reorder siblings
+POST {{api}}/admin/catalog/categories/reorder
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "items": [{ "id": "{{categoryId}}", "position": 2 }] }
+
+### 10. What would a delete touch? (children + product counts, before anything happens)
+GET {{api}}/admin/catalog/categories/{{categoryId}}/delete-impact?strategy=BLOCK
+
+### 11. Create a product. Idempotency-Key makes a retry safe.
+# @name newProduct
+POST {{api}}/admin/catalog/products
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: demo-product-0001
+
+{
+  "sku": "CW-RECL-001",
+  "name": "Aspen Recliner",
+  "productType": "VARIABLE",
+  "basePricePaise": 4599900,
+  "description": "A two-motor recliner with an independent headrest, built on a kiln-dried hardwood frame and upholstered in stain-resistant fabric.",
+  "warrantyMonths": 36,
+  "lengthMm": 1900,
+  "widthMm": 900,
+  "heightMm": 1050
+}
+
+###
+@productId = {{newProduct.response.body.data.id}}
+@productVersion = {{newProduct.response.body.data.version}}
+
+### 12. Replaying the same key returns the ORIGINAL response (Idempotent-Replay: true)
+POST {{api}}/admin/catalog/products
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: demo-product-0001
+
+{
+  "sku": "CW-RECL-001",
+  "name": "Aspen Recliner",
+  "productType": "VARIABLE",
+  "basePricePaise": 4599900
+}
+
+### 13. Categories (the parent "All X" bucket is added automatically)
+PUT {{api}}/admin/catalog/products/{{productId}}/categories
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "primaryCategoryId": "{{categoryId}}", "categoryIds": [] }
+
+### 14. Preview a variant matrix — nothing is written
+### Replace the ids with a variant-defining attribute and its values.
+@colourAttributeId = REPLACE_WITH_ATTRIBUTE_ID
+# @name matrix
+POST {{api}}/admin/catalog/products/{{productId}}/variants/matrix/preview
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "attributeIds": ["{{colourAttributeId}}"],
+  "selectedValueIdsByAttribute": {
+    "{{colourAttributeId}}": ["VALUE_ID_1", "VALUE_ID_2", "VALUE_ID_3"]
+  },
+  "skuPattern": "{PRODUCT_SKU}-{ATTR:COLOUR}-{INDEX}",
+  "pricingMode": "INHERIT"
+}
+
+### 15. Generate — only the missing combinations are created
+POST {{api}}/admin/catalog/products/{{productId}}/variants/matrix/generate
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: demo-matrix-0001
+
+{
+  "attributeIds": ["{{colourAttributeId}}"],
+  "selectedValueIdsByAttribute": {
+    "{{colourAttributeId}}": ["VALUE_ID_1", "VALUE_ID_2", "VALUE_ID_3"]
+  },
+  "skuPattern": "{PRODUCT_SKU}-{ATTR:COLOUR}-{INDEX}",
+  "pricingMode": "INHERIT"
+}
+
+### 16. Variants of the product
+GET {{api}}/admin/catalog/products/{{productId}}/variants
+
+###
+@variantId = REPLACE_WITH_VARIANT_ID
+
+### 17. Adjust stock. Every movement writes a ledger row in the same transaction.
+POST {{api}}/admin/catalog/variants/{{variantId}}/inventory/adjust
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: demo-stock-0001
+
+{ "delta": 12, "reason": "PURCHASE", "note": "Opening consignment" }
+
+### 18. Concurrency-safe variant: refuse the write unless stock is still what you saw
+POST {{api}}/admin/catalog/variants/{{variantId}}/inventory/adjust
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "delta": -3, "expectedBalance": 999, "reason": "CORRECTION" }
+
+### 19. The ledger reads as a running balance
+GET {{api}}/admin/catalog/variants/{{variantId}}/inventory?limit=20
+
+### 20. Low stock report
+GET {{api}}/admin/catalog/inventory/low-stock?threshold=3
+
+### 21. Try to publish — 422 with every blocker itemised
+POST {{api}}/admin/catalog/products/{{productId}}/publish
+X-CSRF-Token: {{csrf}}
+
+### 22. Read the blockers without attempting a publish
+GET {{api}}/admin/catalog/products/{{productId}}/publish-blockers
+
+### 23. Fix them: tax class, primary image, then publish
+PATCH {{api}}/admin/catalog/products/{{productId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "taxClassId": "REPLACE_WITH_TAX_CLASS_ID", "version": {{productVersion}} }
+
+###
+POST {{api}}/admin/products/{{productId}}/media
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "items": [{ "mediaId": "REPLACE_WITH_MEDIA_ID", "role": "PRIMARY" }] }
+
+###
+POST {{api}}/admin/catalog/products/{{productId}}/publish
+X-CSRF-Token: {{csrf}}
+
+### 24. Duplicate it. New SKU and slug, DRAFT, no stock and no sales history.
+POST {{api}}/admin/catalog/products/{{productId}}/duplicate
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "includeVariants": true, "includeMedia": true }
+
+### 25. Export products as CSV (values starting with = + - @ are neutralised)
+GET {{api}}/admin/catalog/export/PRODUCT?format=csv
+
+### 26. Download an import template
+GET {{api}}/admin/catalog/import/templates/PRODUCT
+
+### 27. Dry-run import — validates, writes nothing
+# @name dryRun
+POST {{api}}/admin/catalog/import/PRODUCT
+X-CSRF-Token: {{csrf}}
+Content-Type: multipart/form-data; boundary=ClearWoodBoundary
+
+--ClearWoodBoundary
+Content-Disposition: form-data; name="dryRun"
+
+true
+--ClearWoodBoundary
+Content-Disposition: form-data; name="files"; filename="products.csv"
+Content-Type: text/csv
+
+< ./products.csv
+--ClearWoodBoundary--
+
+###
+@jobId = {{dryRun.response.body.data.id}}
+
+### 28. Inspect the validation report (row + column + message per error)
+GET {{api}}/admin/catalog/import/jobs/{{jobId}}
+
+### 29. Commit it for real (re-attach the same file)
+POST {{api}}/admin/catalog/import/jobs/{{jobId}}/commit
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: demo-import-commit-0001
+Content-Type: multipart/form-data; boundary=ClearWoodBoundary
+
+--ClearWoodBoundary
+Content-Disposition: form-data; name="files"; filename="products.csv"
+Content-Type: text/csv
+
+< ./products.csv
+--ClearWoodBoundary--
+
+### 30. Import history
+GET {{api}}/admin/catalog/import/jobs?limit=10
+
+### 31. Bulk deactivate, with a per-id result array
+POST {{api}}/admin/catalog/bulk
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "action": "DEACTIVATE", "ids": ["{{productId}}"] }
+
+### 32. Price rules (stored and validated; the engine itself is Prompt 6)
+GET {{api}}/admin/catalog/price-adjustments?limit=20
+
+### 33. Overlapping rules that will fight each other once stacking exists
+GET {{api}}/admin/catalog/price-adjustments/conflicts
+
+### 34. Attribute guards: deleting a value that variants use returns 409 with the counts
+DELETE {{api}}/admin/catalog/attribute-values/REPLACE_WITH_IN_USE_VALUE_ID
+X-CSRF-Token: {{csrf}}
+
+### 35. Brands and tax classes
+GET {{api}}/admin/catalog/brands
+###
+GET {{api}}/admin/catalog/tax-classes
+
+### 36. Delete the demo category with each strategy on throwaway nodes
+DELETE {{api}}/admin/catalog/categories/{{categoryId}}?strategy=REASSIGN_CHILDREN
+X-CSRF-Token: {{csrf}}
+
+###
+POST {{api}}/admin/catalog/categories/{{categoryId}}/restore
+X-CSRF-Token: {{csrf}}
+
+###
+DELETE {{api}}/admin/catalog/categories/{{categoryId}}?strategy=CASCADE_SOFT
+X-CSRF-Token: {{csrf}}

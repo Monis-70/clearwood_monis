@@ -1,0 +1,298 @@
+### ClearWood Furnitures — Prompt 9A: orders, payments and the Razorpay Route split
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+###
+### The story: a guest builds a cart, opens a checkout, places an order, pays with the MOCK driver,
+### the webhook confirms it, the split pays two accounts, the ledger balances, replaying the
+### webhook changes nothing, and a failed payment gives back every hold.
+###
+### Run the API with PAYMENT_DRIVER=mock. No network and no Razorpay account are needed.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+@email = aarav.mehta@example.com
+@password = CustomerDemo@2026
+
+### ---------------------------------------------------- build a cart
+
+### 1. Pick a product.
+# @name product
+GET {{api}}/catalog/products/banyan-live-edge-coffee-table
+
+@productId = {{product.response.body.data.id}}
+@variantId = {{product.response.body.data.variants.0.id}}
+
+### 2. Add it. This mints the guest cart cookie (Prompt 8).
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{variantId}}", "qty": 2 }
+
+### 3. The cart, priced by the Prompt 6 engine.
+# @name cart
+GET {{api}}/cart
+
+### ------------------------------------------------------- checkout
+
+### 4. Open a checkout. Validates the cart with autoFix OFF and refuses on any BLOCKING issue,
+### snapshots the address, checks serviceability, and remembers the hash of the quote.
+# @name checkout
+POST {{api}}/checkout/init
+Content-Type: application/json
+
+{
+  "contact": { "email": "guest@example.com", "phone": "919810000099" },
+  "shippingAddress": {
+    "fullName": "Guest Shopper",
+    "phone": "919810000099",
+    "line1": "9 Marine Drive",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "stateCode": "MH",
+    "pincode": "400001"
+  },
+  "sameAsShipping": true
+}
+
+@sessionId = {{checkout.response.body.data.id}}
+
+### 5. Read it back. `priceChanged` is false while the quote still matches.
+GET {{api}}/checkout/{{sessionId}}
+
+### 6. L1 — a body carrying an amount is REFUSED (422), not quietly ignored.
+POST {{api}}/checkout/{{sessionId}}/place
+Content-Type: application/json
+
+{ "paymentProvider": "RAZORPAY", "amountPaise": 1, "grandTotalPaise": 1 }
+
+### 7. Place it properly. The order, its items, its address snapshots, its stock reservations and
+### its split allocations are all written in one transaction; the provider order comes after.
+# @name placed
+POST {{api}}/checkout/{{sessionId}}/place
+Content-Type: application/json
+Idempotency-Key: demo-place-0001
+
+{ "paymentProvider": "RAZORPAY" }
+
+@orderId = {{placed.response.body.data.orderId}}
+@orderNumber = {{placed.response.body.data.orderNumber}}
+@providerOrderId = {{placed.response.body.data.providerOrderId}}
+
+### 8. Replaying the same place with the same Idempotency-Key returns the SAME order.
+POST {{api}}/checkout/{{sessionId}}/place
+Content-Type: application/json
+Idempotency-Key: demo-place-0001
+
+{ "paymentProvider": "RAZORPAY" }
+
+### -------------------------------------------------------- payment
+
+### 9. Admin login — needed for the ledger and split views below.
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{ "email": "admin@clearwood.local", "password": "ChangeMe@12345" }
+
+### 10. See the allocations that were written BEFORE any money moved.
+GET {{api}}/admin/orders/{{orderId}}/split-preview
+
+### 11. The mock provider signs with a real HMAC over `${order_id}|${payment_id}`, so the
+### verification below runs the production code path. Paste the ids from the mock simulator —
+### in tests `mock.simulateCheckout()` produces them; here, use the webhook route instead.
+
+### 12. THE WEBHOOK IS THE SOURCE OF TRUTH. Deliver a signed payment.captured and the order
+### confirms entirely on its own, with no verify call at all.
+### (Signature = HMAC-SHA256 of the raw body with the mock webhook secret. Generate it with:
+###   node -e "const{createHmac}=require('crypto');const b=process.argv[1];console.log(createHmac('sha256','mock_webhook_secret_for_tests_only').update(b).digest('hex'))" '<body>')
+POST {{api}}/webhooks/razorpay
+Content-Type: application/json
+X-Razorpay-Signature: PASTE_THE_HMAC_HERE
+
+{
+  "id": "evt_demo_0001",
+  "event": "payment.captured",
+  "payload": { "payment": { "entity": { "id": "pay_demo_0001", "order_id": "{{providerOrderId}}", "amount": 0, "status": "captured", "method": "upi" } } }
+}
+
+### 13. Deliver the SAME event again. It is recorded as DUPLICATE and changes nothing.
+POST {{api}}/webhooks/razorpay
+Content-Type: application/json
+X-Razorpay-Signature: PASTE_THE_HMAC_HERE
+
+{
+  "id": "evt_demo_0001",
+  "event": "payment.captured",
+  "payload": { "payment": { "entity": { "id": "pay_demo_0001", "order_id": "{{providerOrderId}}", "amount": 0, "status": "captured", "method": "upi" } } }
+}
+
+### 14. An unsigned delivery is rejected outright and never stored as valid.
+POST {{api}}/webhooks/razorpay
+Content-Type: application/json
+
+{ "id": "evt_unsigned", "event": "payment.captured", "payload": {} }
+
+### 15. The browser's optimistic path, for comparison. Idempotent: if the webhook already
+### confirmed the order this answers happily with `alreadyConfirmed: true`.
+POST {{api}}/checkout/verify
+Content-Type: application/json
+
+{
+  "razorpay_order_id": "{{providerOrderId}}",
+  "razorpay_payment_id": "pay_demo_0001",
+  "razorpay_signature": "PASTE_THE_PAYMENT_HMAC_HERE"
+}
+
+### ------------------------------------------------------ the order
+
+### 16. The order, rendered from its FROZEN snapshot — never re-quoted.
+GET {{api}}/admin/orders/{{orderId}}
+
+### 17. Does the money balance? Every check must be ok.
+GET {{api}}/admin/orders/{{orderId}}/ledger-check
+
+### 18. Guest tracking: order number plus the contact on the order. Nothing sensitive comes back.
+POST {{api}}/orders/track
+Content-Type: application/json
+
+{ "orderNumber": "{{orderNumber}}", "email": "guest@example.com" }
+
+### 19. A wrong contact answers the same 404 as a number that never existed.
+POST {{api}}/orders/track
+Content-Type: application/json
+
+{ "orderNumber": "{{orderNumber}}", "email": "not.this.person@example.com" }
+
+### ------------------------------------------------------- the split
+
+### 20. THE CANONICAL CASE. ₹6,000 splits to PRIMARY ₹5,000 + PARTNER_A ₹1,000, exactly.
+POST {{api}}/admin/payments/split-simulate
+Content-Type: application/json
+
+{ "amountPaise": 600000 }
+
+### 21. The rules that produced it — data, not code.
+GET {{api}}/admin/payments/split-rules
+
+### 22. And the accounts they pay.
+GET {{api}}/admin/payments/split-accounts
+
+### 23. Retry only the FAILED payout legs. A successful transfer is never touched.
+POST {{api}}/admin/orders/{{orderId}}/retry-transfers
+
+### 24. Every stored provider event, with its status.
+GET {{api}}/admin/webhooks?limit=20
+
+### 25. Replay one from the admin. Idempotent by construction.
+POST {{api}}/admin/webhooks/REPLACE_WITH_EVENT_ID/replay
+
+### 26. Payment settings.
+GET {{api}}/admin/payments/settings
+
+### ----------------------------------------------- a failed payment
+
+### 27. Build a second cart.
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{variantId}}", "qty": 1 }
+
+### 28. Open a checkout for it.
+# @name failing
+POST {{api}}/checkout/init
+Content-Type: application/json
+
+{
+  "contact": { "email": "guest@example.com" },
+  "shippingAddress": {
+    "fullName": "Guest Shopper",
+    "phone": "919810000099",
+    "line1": "9 Marine Drive",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "stateCode": "MH",
+    "pincode": "400001"
+  },
+  "sameAsShipping": true
+}
+
+@failingSession = {{failing.response.body.data.id}}
+
+### 29. Place it — stock and the coupon slot are now HELD.
+# @name failingOrder
+POST {{api}}/checkout/{{failingSession}}/place
+Content-Type: application/json
+
+{ "paymentProvider": "RAZORPAY" }
+
+### 30. Abandon it. Every hold goes back: the reservation is RELEASED, the coupon slot returns,
+### and the order lands in PAYMENT_FAILED. Nothing is stranded.
+POST {{api}}/checkout/{{failingSession}}/abandon
+
+### 31. Confirm it: the reservations on this order are all RELEASED.
+GET {{api}}/admin/orders/{{failingOrder.response.body.data.orderId}}
+
+### ---------------------------------------------------------- COD
+
+### 32. Cash on delivery confirms with no provider call and creates no transfers.
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{variantId}}", "qty": 1 }
+
+### 33.
+# @name codCheckout
+POST {{api}}/checkout/init
+Content-Type: application/json
+
+{
+  "contact": { "email": "guest@example.com" },
+  "shippingAddress": {
+    "fullName": "Guest Shopper",
+    "phone": "919810000099",
+    "line1": "9 Marine Drive",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "stateCode": "MH",
+    "pincode": "400001"
+  },
+  "sameAsShipping": true
+}
+
+### 34.
+POST {{api}}/checkout/{{codCheckout.response.body.data.id}}/place
+Content-Type: application/json
+
+{ "paymentProvider": "COD" }
+
+### ------------------------------------------------- customer orders
+
+### 35. Sign in and read your own orders. Somebody else's order number answers 404, not 403.
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "identifier": "{{email}}", "password": "{{password}}" }
+
+### 36.
+GET {{api}}/me/orders
+
+### 37.
+GET {{api}}/me/orders/{{orderNumber}}
+
+### 38.
+GET {{api}}/me/orders/{{orderNumber}}/timeline
+
+### 39. Cancel it. Holds are released and a Refund row is created in REQUESTED — executing that
+### refund is Prompt 9B.
+POST {{api}}/me/orders/{{orderNumber}}/cancel
+Content-Type: application/json
+
+{ "reason": "CUSTOMER_REQUEST", "note": "changed my mind" }
+
+### ----------------------------------------------------- the sweep
+
+### 40. Reconciliation: asks the provider for the truth before releasing anything, then reports
+### captured-without-transfers, allocation mismatches and orphan reservations.
+POST {{api}}/admin/orders/reconcile
+Content-Type: application/json
+
+{ "olderThanMinutes": 0, "limit": 50 }

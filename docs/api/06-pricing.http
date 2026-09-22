@@ -1,0 +1,151 @@
+### ClearWood Furnitures — Prompt 6: pricing engine
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+@slug = kabir-3-seater-fabric-sofa
+
+### ------------------------------------------------------------ public API
+
+### 1. Product price, single unit, no context
+GET {{api}}/catalog/products/{{slug}}/price
+
+### 2. Product price with options, a quantity tier, a pincode and a coupon
+# @name productPrice
+GET {{api}}/catalog/products/{{slug}}/price?qty=5&pincode=400001&couponCode=WELCOME10
+
+### The breakdown's components must sum exactly to grandTotalPaise.
+@productId = {{productPrice.response.body.data.lines.0.productId}}
+
+### 3. Cart quote — two lines, one coupon, one delivery address
+# @name quote
+POST {{api}}/pricing/quote
+Content-Type: application/json
+
+{
+  "items": [
+    { "slug": "kabir-3-seater-fabric-sofa", "qty": 1 },
+    { "slug": "ortho-zen-pocket-spring-mattress", "qty": 2 }
+  ],
+  "couponCode": "WELCOME10",
+  "pincode": "400001",
+  "channel": "WEB"
+}
+
+### 4. Coupon validation — success
+POST {{api}}/pricing/validate-coupon
+Content-Type: application/json
+
+{
+  "code": "WELCOME10",
+  "items": [{ "slug": "{{slug}}", "qty": 1 }],
+  "pincode": "400001"
+}
+
+### 5. Coupon validation — failure (expired campaign; expect isValid:false, code EXPIRED)
+POST {{api}}/pricing/validate-coupon
+Content-Type: application/json
+
+{
+  "code": "EXPIRED2025",
+  "items": [{ "slug": "{{slug}}", "qty": 1 }]
+}
+
+### 6. Coupon validation — failure (unknown code; expect NOT_FOUND)
+POST {{api}}/pricing/validate-coupon
+Content-Type: application/json
+
+{
+  "code": "NOPE404",
+  "items": [{ "slug": "{{slug}}", "qty": 1 }]
+}
+
+### 7. Serviceability — a served metro pincode
+GET {{api}}/shipping/serviceability/400001
+
+### 8. Serviceability — an unserved pincode
+GET {{api}}/shipping/serviceability/999999
+
+### 9. Serviceability — a malformed pincode (expect 422)
+GET {{api}}/shipping/serviceability/12ab
+
+### ------------------------------------------------------------- admin API
+
+### 10. Sign in (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@clearwood.local",
+  "password": "ChangeMe@12345"
+}
+
+###
+@csrf = {{adminLogin.response.headers.$['set-cookie'][2]}}
+
+### 11. Simulate with a full rule trace (matched AND unmatched rules with reasons)
+POST {{api}}/admin/pricing/simulate
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "items": [{ "productId": "{{productId}}", "qty": 5 }],
+  "couponCode": "WELCOME10",
+  "pincode": "400001",
+  "includeTrace": true
+}
+
+### 12. Explain every rule that could ever touch one product
+GET {{api}}/admin/pricing/explain/{{productId}}
+
+### 13. Pricing settings
+GET {{api}}/admin/pricing/settings
+
+### 14. Create a coupon
+# @name newCoupon
+POST {{api}}/admin/pricing/coupons
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+Idempotency-Key: coupon-create-http-001
+
+{
+  "code": "HTTPDOC15",
+  "name": "REST client demo — 15% off",
+  "type": "PERCENT",
+  "valueBp": 1500,
+  "minSubtotalPaise": 500000,
+  "maxDiscountPaise": 300000,
+  "usageLimit": 100,
+  "perCustomerLimit": 1,
+  "isActive": true
+}
+
+###
+@couponId = {{newCoupon.response.body.data.id}}
+
+### 15. Redemption list for that coupon
+GET {{api}}/admin/pricing/coupons/{{couponId}}/redemptions
+
+### 16. Deactivate it (optimistic locking — version must match)
+PATCH {{api}}/admin/pricing/coupons/{{couponId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "isActive": false,
+  "version": {{newCoupon.response.body.data.version}}
+}
+
+### 17. Re-run the public quote — the cache must already be invalidated
+POST {{api}}/pricing/quote
+Content-Type: application/json
+
+{
+  "items": [{ "slug": "{{slug}}", "qty": 1 }],
+  "couponCode": "HTTPDOC15"
+}
+
+### 18. Clean up
+DELETE {{api}}/admin/pricing/coupons/{{couponId}}
+X-CSRF-Token: {{csrf}}

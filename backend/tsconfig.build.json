@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "sourceMap": false,
+    "baseUrl": ".",
+    // Type-check the production build against shared's emitted .d.ts (so `shared` must be built
+    // first); scripts/rewrite-shared-imports.cjs maps the alias onto the package at runtime.
+    "paths": {
+      "@shared/*": ["../shared/dist/cjs/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "tests", "prisma", "vitest.config.mts"]
+}

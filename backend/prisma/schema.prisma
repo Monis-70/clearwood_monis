@@ -1,0 +1,2913 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// D1 — the provider below is OWNED BY `DATABASE_PROVIDER`. Prisma refuses `env()` in the provider
+// argument, so `backend/scripts/sync-prisma-provider.cjs` writes it from the env var before every
+// generate/migrate. MySQL 8 is now the only supported target (docs/DB_MIGRATION_PLAN.md).
+// D2 — no `enum`. D3 — no `Json`. D5 — money is Int paise.
+// D4 is RETIRED: every String column declares an explicit @db type, enforced by
+// tests/schema-types.test.ts. A bare String becomes VARCHAR(191) on MySQL and truncates silently.
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+  // The app user cannot create databases, so migrate dev needs a pre-created empty one.
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+/// Admin-editable configuration. R8 — anything an admin might change lives here, never in code.
+/// `valueType` is "string" | "number" | "boolean" | "json" (shared/src/enums.ts) so settings stay
+/// typed without needing a Json column (D3).
+model AppSetting {
+  id        String   @id @default(cuid()) @db.VarChar(64)
+  key       String   @unique @db.VarChar(191)
+  value     String   @db.Text
+  group     String   @db.VarChar(64)
+  valueType String   @db.VarChar(64)
+  isPublic  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([group])
+  @@index([isPublic])
+}
+
+/// Append-only trail of who changed what. `meta` and `changesJson` are JSON strings (D3), read with
+/// jsonColumn<T>(). `actorType` holds a PrincipalType; `changesJson` is a {before, after} diff.
+model AuditLog {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  actorType   String   @db.VarChar(64)
+  actorId     String?  @db.VarChar(64)
+  actorName   String?  @db.VarChar(255)
+  actorEmail  String?  @db.VarChar(191)
+  realm       String?  @db.VarChar(64)
+  action      String   @db.VarChar(64)
+  entity      String   @db.VarChar(64)
+  entityId    String?  @db.VarChar(64)
+  severity    String   @default("INFO") @db.VarChar(64)
+  requestId   String?  @db.VarChar(64)
+  meta        String?  @db.Text
+  changesJson String?  @db.LongText
+  ip          String?  @db.VarChar(45)
+  userAgent   String?  @db.VarChar(512)
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+// ===========================================================================
+// CATALOG CORE (Prompt 2)
+// Every "enum" column is a String backed by a const-union in shared/src/enums.ts (D2).
+// Every JSON column is a String read through backend/src/utils/jsonColumn.ts (D3).
+// Money is Int paise; rates/percentages are Int basis points (18% = 1800) (D5).
+// `*MediaId` columns are plain ids rather than relations so media can be swapped or purged
+// without cascading through the catalog; they are resolved by MediaRepository.
+// ===========================================================================
+
+/// GST class. `rateBp` is basis points: 18% = 1800.
+model TaxClass {
+  id        String    @id @default(cuid()) @db.VarChar(64)
+  code      String    @unique @db.VarChar(191)
+  name      String    @db.VarChar(255)
+  rateBp    Int
+  hsnCode   String?   @db.VarChar(64)
+  isDefault Boolean   @default(false)
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  products Product[]
+
+  @@index([isActive])
+}
+
+model Brand {
+  id          String    @id @default(cuid()) @db.VarChar(64)
+  name        String    @db.VarChar(255)
+  slug        String    @unique @db.VarChar(191)
+  logoMediaId String?   @db.VarChar(64)
+  description String?   @db.Text
+  isActive    Boolean   @default(true)
+  position    Int       @default(0)
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  products Product[]
+
+  @@index([isActive, position])
+}
+
+/// One stored asset. `disk` matches the StorageDriver name ("local" now, "s3" later) and `path` is
+/// the driver key — the public URL is always resolved through the driver, never hardcoded.
+/// `focalPointX/Y` are basis points of width/height (0–10000) so smart crops survive a resize.
+model Media {
+  id               String    @id @default(cuid()) @db.VarChar(64)
+  disk             String    @db.VarChar(64)
+  path             String    @db.VarChar(255)
+  url              String?   @db.VarChar(255)
+  kind             String    @db.VarChar(64)
+  status           String    @default("READY") @db.VarChar(64)
+  source           String    @default("ADMIN_UPLOAD") @db.VarChar(64)
+  mimeType         String    @db.VarChar(64)
+  originalName     String    @db.VarChar(255)
+  sizeBytes        Int
+  checksum         String?   @db.Char(64)
+  checksumSha256   String?   @db.VarChar(191)
+  width            Int?
+  height           Int?
+  durationSec      Int?
+  altText          String?   @db.VarChar(1000)
+  title            String?   @db.VarChar(255)
+  blurhash         String?   @db.VarChar(255)
+  dominantColorHex String?   @db.VarChar(16)
+  lqipDataUri      String?   @db.Text
+  focalPointX      Int?
+  focalPointY      Int?
+  isOptimized      Boolean   @default(false)
+  processingError  String?   @db.Text
+  tagsJson         String?   @db.LongText
+  usageCount       Int       @default(0)
+  folder           String    @default("uploads") @db.VarChar(191)
+  folderId         String?   @db.VarChar(64)
+  uploadedByType   String?   @db.VarChar(64)
+  uploadedById     String?   @db.VarChar(64)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  folderRef    MediaFolder?   @relation(fields: [folderId], references: [id])
+  variants     MediaVariant[]
+  productMedia ProductMedia[]
+  usages       MediaUsage[]
+
+  @@index([kind])
+  @@index([folder])
+  @@index([folderId])
+  @@index([status])
+  @@index([checksumSha256])
+}
+
+/// Materialised-path folder tree for the media library (utils/materializedPath.ts).
+/// `isSystem` rows are seeded and cannot be renamed, moved or deleted.
+model MediaFolder {
+  id        String    @id @default(cuid()) @db.VarChar(64)
+  name      String    @db.VarChar(255)
+  slug      String    @unique @db.VarChar(191)
+  parentId  String?   @db.VarChar(64)
+  path      String    @db.VarChar(255)
+  depth     Int       @default(0)
+  position  Int       @default(0)
+  isSystem  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  parent   MediaFolder?  @relation("MediaFolderTree", fields: [parentId], references: [id])
+  children MediaFolder[] @relation("MediaFolderTree")
+  media    Media[]
+
+  @@index([parentId, position])
+  @@index([path])
+}
+
+/// The single source of truth for "where is this asset used". Every attach/detach goes through
+/// MediaUsageService, so a hard delete can be blocked safely (409 MEDIA_IN_USE).
+model MediaUsage {
+  id        String   @id @default(cuid()) @db.VarChar(64)
+  mediaId   String   @db.VarChar(64)
+  usageType String   @db.VarChar(191)
+  entityId  String   @db.VarChar(191)
+  field     String?  @db.VarChar(191)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([mediaId, usageType, entityId, field])
+  @@index([usageType, entityId])
+}
+
+/// Derived renditions. A media asset carries the same label in several formats (MEDIUM/webp and
+/// MEDIUM/jpeg), which is why the unique key includes `format`.
+model MediaVariant {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  mediaId      String   @db.VarChar(64)
+  label        String   @db.VarChar(191)
+  path         String   @db.VarChar(255)
+  width        Int
+  height       Int
+  sizeBytes    Int
+  format       String   @db.VarChar(191)
+  isDefault    Boolean  @default(false)
+  deviceTarget String   @default("ALL") @db.VarChar(64)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  media Media @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([mediaId, label, format])
+  @@index([mediaId, deviceTarget])
+}
+
+/// `path` is a materialised slug path ("sofas/fabric-sofas") maintained by CategoryPathService.
+/// Never write it by hand — it is what makes breadcrumbs and attribute inheritance one query.
+model Category {
+  id                  String    @id @default(cuid()) @db.VarChar(64)
+  name                String    @db.VarChar(255)
+  slug                String    @unique @db.VarChar(191)
+  parentId            String?   @db.VarChar(64)
+  path                String    @db.VarChar(255)
+  depth               Int       @default(0)
+  position            Int       @default(0)
+  kind                String    @default("STANDARD") @db.VarChar(64)
+  isActive            Boolean   @default(true)
+  showInMenu          Boolean   @default(true)
+  menuColumn          Int?
+  isFeatured          Boolean   @default(false)
+  shortDescription    String?   @db.Text
+  description         String?   @db.Text
+  iconMediaId         String?   @db.VarChar(64)
+  bannerMediaId       String?   @db.VarChar(64)
+  mobileBannerMediaId String?   @db.VarChar(64)
+  seoTitle            String?   @db.VarChar(255)
+  seoDescription      String?   @db.Text
+  seoKeywords         String?   @db.Text
+  productCountCache   Int       @default(0)
+  deleteStrategyNote  String?   @db.VarChar(1000)
+  version             Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+
+  attributes      CategoryAttribute[]
+  products        ProductCategory[]
+  navigationItems NavigationItem[]
+
+  @@index([parentId, position])
+  @@index([path])
+  @@index([isActive, showInMenu])
+}
+
+model AttributeGroup {
+  id        String   @id @default(cuid()) @db.VarChar(64)
+  name      String   @db.VarChar(255)
+  code      String   @unique @db.VarChar(191)
+  position  Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attributes Attribute[]
+
+  @@index([position])
+}
+
+model Attribute {
+  id                String    @id @default(cuid()) @db.VarChar(64)
+  code              String    @unique @db.VarChar(191)
+  name              String    @db.VarChar(255)
+  groupId           String?   @db.VarChar(64)
+  inputType         String    @db.VarChar(64)
+  dataType          String    @default("STRING") @db.VarChar(64)
+  unit              String?   @db.VarChar(64)
+  isVariantDefining Boolean   @default(false)
+  isFilterable      Boolean   @default(true)
+  isSearchable      Boolean   @default(false)
+  isRequired        Boolean   @default(false)
+  isComparable      Boolean   @default(false)
+  showInSwatch      Boolean   @default(false)
+  position          Int       @default(0)
+  helpText          String?   @db.VarChar(1000)
+  isActive          Boolean   @default(true)
+  version           Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  group AttributeGroup? @relation(fields: [groupId], references: [id])
+
+  values        AttributeValue[]
+  categories    CategoryAttribute[]
+  productValues ProductAttributeValue[]
+  variantValues VariantAttributeValue[]
+
+  @@index([groupId, position])
+  @@index([isFilterable])
+}
+
+model AttributeValue {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  attributeId   String    @db.VarChar(64)
+  code          String    @db.VarChar(191)
+  label         String    @db.VarChar(255)
+  position      Int       @default(0)
+  colorHex      String?   @db.VarChar(16)
+  swatchMediaId String?   @db.VarChar(64)
+  numericValue  Int?
+  metaJson      String?   @db.LongText
+  isActive      Boolean   @default(true)
+  version       Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  productValues ProductAttributeValue[]
+  variantValues VariantAttributeValue[]
+  productMedia  ProductMedia[]
+
+  @@unique([attributeId, code])
+  @@index([attributeId, position])
+}
+
+/// Attributes are INHERITED down the category path; a child row overrides its ancestor's flags.
+/// Resolution lives in CategoryAttributeService.resolveForCategory().
+model CategoryAttribute {
+  id                String   @id @default(cuid()) @db.VarChar(64)
+  categoryId        String   @db.VarChar(64)
+  attributeId       String   @db.VarChar(64)
+  isRequired        Boolean  @default(false)
+  isVariantDefining Boolean  @default(false)
+  isFilterable      Boolean  @default(true)
+  position          Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  category  Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, attributeId])
+  @@index([categoryId, position])
+}
+
+model Product {
+  id                  String    @id @default(cuid()) @db.VarChar(64)
+  sku                 String    @unique @db.VarChar(191)
+  slug                String    @unique @db.VarChar(191)
+  name                String    @db.VarChar(255)
+  subtitle            String?   @db.VarChar(255)
+  shortDescription    String?   @db.Text
+  description         String?   @db.Text
+  productType         String    @default("SIMPLE") @db.VarChar(64)
+  status              String    @default("DRAFT") @db.VarChar(64)
+  visibility          String    @default("PUBLIC") @db.VarChar(64)
+  brandId             String?   @db.VarChar(64)
+  taxClassId          String?   @db.VarChar(64)
+  basePricePaise      Int       @default(0)
+  compareAtPricePaise Int?
+  costPricePaise      Int?
+  /// Free-form pricing caveat shown on the PDP, e.g. "Price per seat, fabric extra".
+  priceNote           String?   @db.VarChar(1000)
+  isMadeToOrder       Boolean   @default(false)
+  leadTimeDays        Int?
+  allowCustomization  Boolean   @default(false)
+  manufacturedInHouse Boolean   @default(true)
+  manufacturingNote   String?   @db.VarChar(255)
+  warrantyMonths      Int?
+  careInstructions    String?   @db.Text
+  assemblyRequired    Boolean   @default(false)
+  weightGrams         Int?
+  lengthMm            Int?
+  widthMm             Int?
+  heightMm            Int?
+  seatHeightMm        Int?
+  isFeatured          Boolean   @default(false)
+  isNewArrival        Boolean   @default(false)
+  isSpecialCollection Boolean   @default(false)
+  isBestSeller        Boolean   @default(false)
+  minOrderQty         Int       @default(1)
+  maxOrderQty         Int?
+  ratingAvgBp         Int       @default(0)
+  ratingCount         Int       @default(0)
+  soldCount           Int       @default(0)
+  position            Int       @default(0)
+  publishedAt         DateTime?
+  lastPublishedAt     DateTime?
+  completenessScore   Int       @default(0)
+  publishBlockersJson String?   @db.LongText
+  seoTitle            String?   @db.VarChar(255)
+  seoDescription      String?   @db.Text
+  seoKeywords         String?   @db.Text
+  searchKeywords      String?   @db.Text
+  version             Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  brand    Brand?    @relation(fields: [brandId], references: [id])
+  taxClass TaxClass? @relation(fields: [taxClassId], references: [id])
+
+  categories      ProductCategory[]
+  attributeValues ProductAttributeValue[]
+  variants        ProductVariant[]
+  media           ProductMedia[]
+  collections     CollectionProduct[]
+  relations       ProductRelation[]       @relation("ProductRelationSource")
+  relatedBy       ProductRelation[]       @relation("ProductRelationTarget")
+  stat            ProductStat?
+
+  @@index([status, publishedAt])
+  @@index([isNewArrival])
+  @@index([isFeatured])
+  @@index([basePricePaise])
+  @@index([completenessScore])
+}
+
+/// A product belongs to MANY categories ("All Sofas" + "Fabric" + "New Arrivals").
+model ProductCategory {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  productId  String   @db.VarChar(64)
+  categoryId String   @db.VarChar(64)
+  isPrimary  Boolean  @default(false)
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, categoryId])
+  @@index([categoryId, position])
+}
+
+/// Non-variant specs: Material = Teak, Filling = HR Foam.
+model ProductAttributeValue {
+  id               String   @id @default(cuid()) @db.VarChar(64)
+  productId        String   @db.VarChar(64)
+  attributeId      String   @db.VarChar(64)
+  attributeValueId String?  @db.VarChar(64)
+  valueText        String?  @db.VarChar(1000)
+  valueNumber      Int?
+  valueBoolean     Boolean?
+  position         Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute      Attribute       @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  attributeValue AttributeValue? @relation(fields: [attributeValueId], references: [id])
+
+  @@unique([productId, attributeId, attributeValueId])
+  @@index([productId, position])
+}
+
+/// `pricePaise` null => derive from the product base price plus adjustments (Prompt 6).
+model ProductVariant {
+  id                  String    @id @default(cuid()) @db.VarChar(64)
+  productId           String    @db.VarChar(64)
+  sku                 String    @unique @db.VarChar(191)
+  name                String?   @db.VarChar(255)
+  pricePaise          Int?
+  compareAtPricePaise Int?
+  costPricePaise      Int?
+  weightGrams         Int?
+  barcode             String?   @db.VarChar(64)
+  position            Int       @default(0)
+  isDefault           Boolean   @default(false)
+  isActive            Boolean   @default(true)
+  stockQty            Int       @default(0)
+  reservedQty         Int       @default(0)
+  stockStatus         String    @default("IN_STOCK") @db.VarChar(64)
+  lowStockThreshold   Int       @default(0)
+  allowBackorder      Boolean   @default(false)
+  leadTimeDays        Int?
+  lengthMm            Int?
+  widthMm             Int?
+  heightMm            Int?
+  /// Prompt 9B — furniture does not ship in one box. Both feed the courier's rate call.
+  packageCount        Int       @default(1)
+  packagingType       String    @default("BOX") @db.VarChar(64)
+  version             Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  attributeValues VariantAttributeValue[]
+  media           ProductMedia[]
+  ledger          InventoryLedger[]
+
+  @@index([productId, position])
+}
+
+/// Exactly one row per variant-defining attribute — enforced by VariantService, not only by the DB.
+model VariantAttributeValue {
+  id               String   @id @default(cuid()) @db.VarChar(64)
+  variantId        String   @db.VarChar(64)
+  attributeId      String   @db.VarChar(64)
+  attributeValueId String   @db.VarChar(64)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  attribute      Attribute      @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  attributeValue AttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, attributeId])
+  @@index([attributeValueId])
+}
+
+model ProductMedia {
+  id               String   @id @default(cuid()) @db.VarChar(64)
+  productId        String   @db.VarChar(64)
+  mediaId          String   @db.VarChar(64)
+  role             String   @default("GALLERY") @db.VarChar(64)
+  position         Int      @default(0)
+  altText          String?  @db.VarChar(1000)
+  deviceTarget     String   @default("ALL") @db.VarChar(64)
+  attributeValueId String?  @db.VarChar(64)
+  variantId        String?  @db.VarChar(64)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  media          Media           @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  attributeValue AttributeValue? @relation(fields: [attributeValueId], references: [id])
+  variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([productId, position])
+  @@index([productId, attributeValueId])
+}
+
+/// Prompt 2 ships the model, repository and validation ONLY. Resolution and maths are Prompt 6's
+/// PricingEngine. Scope FKs are plain ids (no relations) so the engine can match them in one pass.
+model PriceAdjustment {
+  id               String    @id @default(cuid()) @db.VarChar(64)
+  name             String    @db.VarChar(255)
+  scope            String    @db.VarChar(64)
+  adjustmentType   String    @db.VarChar(64)
+  basis            String    @default("BASE") @db.VarChar(64)
+  priority         Int       @default(100)
+  isActive         Boolean   @default(true)
+  valuePaise       Int?
+  valueBp          Int?
+  categoryId       String?   @db.VarChar(64)
+  productId        String?   @db.VarChar(64)
+  variantId        String?   @db.VarChar(64)
+  attributeId      String?   @db.VarChar(64)
+  attributeValueId String?   @db.VarChar(64)
+  /// Targeted B2B/bulk pricing: null applies to everyone (Prompt 6).
+  customerGroupId  String?   @db.VarChar(64)
+  /// "ALL" matches every sales channel (Prompt 6).
+  channel          String    @default("ALL") @db.VarChar(64)
+  minQty           Int?
+  maxQty           Int?
+  startsAt         DateTime?
+  endsAt           DateTime?
+  conditionsJson   String?   @db.LongText
+  note             String?   @db.VarChar(1000)
+  version          Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  @@index([scope, isActive, priority])
+  @@index([productId])
+  @@index([attributeValueId])
+  @@index([customerGroupId])
+}
+
+/// MANUAL collections list products explicitly; AUTOMATIC ones store their rules in `rulesJson`
+/// (a JSON String, D3) which the Prompt 7 catalog service evaluates.
+model Collection {
+  id                  String    @id @default(cuid()) @db.VarChar(64)
+  slug                String    @unique @db.VarChar(191)
+  name                String    @db.VarChar(255)
+  type                String    @default("MANUAL") @db.VarChar(64)
+  description         String?   @db.Text
+  rulesJson           String?   @db.LongText
+  bannerMediaId       String?   @db.VarChar(64)
+  mobileBannerMediaId String?   @db.VarChar(64)
+  isActive            Boolean   @default(true)
+  position            Int       @default(0)
+  startsAt            DateTime?
+  endsAt              DateTime?
+  seoTitle            String?   @db.VarChar(255)
+  seoDescription      String?   @db.Text
+  /// Set by collectionRules.evaluate() (Prompt 7); null means an AUTOMATIC collection never ran.
+  lastEvaluatedAt     DateTime?
+  evaluatedCount      Int       @default(0)
+  version             Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
+
+  products        CollectionProduct[]
+  navigationItems NavigationItem[]
+
+  @@index([isActive, position])
+}
+
+model CollectionProduct {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  collectionId String   @db.VarChar(64)
+  productId    String   @db.VarChar(64)
+  position     Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, productId])
+  @@index([collectionId, position])
+}
+
+// ===========================================================================
+// ADMIN CATALOG (Prompt 5)
+// ===========================================================================
+
+/// Every slug change leaves a trail so links never rot. Prompt 7 serves the 301s from here.
+/// Chains are flattened on write (A->B then B->C rewrites A->C), so a lookup is always one hop.
+model SlugRedirect {
+  id         String    @id @default(cuid()) @db.VarChar(64)
+  entityType String    @db.VarChar(191)
+  fromSlug   String    @db.VarChar(191)
+  toSlug     String    @db.VarChar(191)
+  entityId   String    @db.VarChar(64)
+  statusCode Int       @default(301)
+  hitCount   Int       @default(0)
+  lastHitAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([entityType, fromSlug])
+  @@index([entityId])
+  @@index([entityType, toSlug])
+}
+
+/// Append-only stock history. `ProductVariant.stockQty` may ONLY move through
+/// InventoryService, which writes a ledger row and the new balance in one transaction.
+/// `balanceAfter` is the running total, so the ledger is self-auditing.
+model InventoryLedger {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  variantId    String   @db.VarChar(64)
+  delta        Int
+  balanceAfter Int
+  /// Indexed with createdAt, so it is bounded: utf8mb4 caps an index key at 3072 bytes.
+  reason       String   @db.VarChar(64)
+  refType      String?  @db.VarChar(64)
+  refId        String?  @db.VarChar(64)
+  note         String?  @db.VarChar(1000)
+  actorType    String   @default("SYSTEM") @db.VarChar(64)
+  actorId      String?  @db.VarChar(64)
+  createdAt    DateTime @default(now())
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@index([variantId, createdAt])
+  @@index([reason, createdAt])
+}
+
+model ProductRelation {
+  id               String   @id @default(cuid()) @db.VarChar(64)
+  productId        String   @db.VarChar(64)
+  relatedProductId String   @db.VarChar(64)
+  type             String   @db.VarChar(191)
+  position         Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product        Product @relation("ProductRelationSource", fields: [productId], references: [id], onDelete: Cascade)
+  relatedProduct Product @relation("ProductRelationTarget", fields: [relatedProductId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, relatedProductId, type])
+  @@index([relatedProductId])
+}
+
+/// One CSV upload. A job is validated (dryRun) before it may be committed; `errorsJson` holds
+/// {row, column, message} entries and `summaryJson` the per-entity counts.
+model ImportJob {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  entity        String    @db.VarChar(64)
+  status        String    @default("PENDING") @db.VarChar(64)
+  fileName      String    @db.VarChar(255)
+  mediaId       String?   @db.VarChar(64)
+  dryRun        Boolean   @default(true)
+  totalRows     Int       @default(0)
+  processedRows Int       @default(0)
+  successRows   Int       @default(0)
+  errorRows     Int       @default(0)
+  errorsJson    String?   @db.LongText
+  summaryJson   String?   @db.LongText
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  createdById   String?   @db.VarChar(64)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([entity, status])
+  @@index([createdAt])
+}
+
+/// Replay protection for mutations that would otherwise duplicate work (create, duplicate,
+/// stock adjustment, bulk action, import commit). The stored response is replayed verbatim until
+/// `expiresAt`; a different payload under the same key is rejected with 409.
+model IdempotencyKey {
+  id             String    @id @default(cuid()) @db.VarChar(64)
+  key            String    @db.VarChar(191)
+  scope          String    @db.VarChar(191)
+  principalType  String    @db.VarChar(64)
+  principalId    String?   @db.VarChar(64)
+  method         String    @db.VarChar(64)
+  path           String    @db.VarChar(255)
+  requestHash    String    @db.Char(64)
+  status         String    @default("IN_PROGRESS") @db.VarChar(64)
+  responseStatus Int?
+  responseJson   String?   @db.LongText
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@unique([scope, key])
+  @@index([expiresAt])
+}
+
+// ===========================================================================
+// PRICING ENGINE (Prompt 6)
+// Every amount is Int paise, every rate Int basis points (D5).
+// These tables are INPUTS to modules/pricing/pricing.engine.ts — the single calculation path.
+// ===========================================================================
+
+/// Who the customer is for pricing purposes: RETAIL, TRADE, BULK, VIP.
+model CustomerGroup {
+  id          String    @id @default(cuid()) @db.VarChar(64)
+  code        String    @unique @db.VarChar(191)
+  name        String    @db.VarChar(255)
+  description String?   @db.Text
+  isDefault   Boolean   @default(false)
+  priority    Int       @default(100)
+  /// Blanket discount for the group, applied as an adjustment. Null = no blanket discount.
+  discountBp  Int?
+  isActive    Boolean   @default(true)
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  members    CustomerGroupMember[]
+  priceLists PriceList[]
+  tiers      TierPrice[]
+
+  @@index([isActive, priority])
+}
+
+model CustomerGroupMember {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  customerId String   @db.VarChar(191)
+  groupId    String   @db.VarChar(64)
+  assignedAt DateTime @default(now())
+
+  group CustomerGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, groupId])
+  @@index([groupId])
+}
+
+/// A whole price book for a group/channel. Its items REPLACE the base price when they match.
+model PriceList {
+  id              String    @id @default(cuid()) @db.VarChar(64)
+  code            String    @unique @db.VarChar(191)
+  name            String    @db.VarChar(255)
+  customerGroupId String?   @db.VarChar(64)
+  channel         String    @default("WEB") @db.VarChar(64)
+  priority        Int       @default(100)
+  startsAt        DateTime?
+  endsAt          DateTime?
+  isActive        Boolean   @default(true)
+  version         Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  customerGroup CustomerGroup?  @relation(fields: [customerGroupId], references: [id])
+  items         PriceListItem[]
+
+  @@index([isActive, priority])
+}
+
+model PriceListItem {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  priceListId String   @db.VarChar(64)
+  productId   String?  @db.VarChar(191)
+  variantId   String?  @db.VarChar(191)
+  minQty      Int      @default(1)
+  pricePaise  Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  priceList PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+
+  @@unique([priceListId, productId, variantId, minQty])
+  @@index([productId])
+  @@index([variantId])
+}
+
+/// Quantity breaks. Exactly one of pricePaise / discountBp is set (enforced by Zod).
+model TierPrice {
+  id              String    @id @default(cuid()) @db.VarChar(64)
+  productId       String?   @db.VarChar(64)
+  variantId       String?   @db.VarChar(64)
+  customerGroupId String?   @db.VarChar(64)
+  minQty          Int
+  pricePaise      Int?
+  discountBp      Int?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  customerGroup CustomerGroup? @relation(fields: [customerGroupId], references: [id])
+
+  @@index([productId, minQty])
+  @@index([variantId, minQty])
+}
+
+/// Codes are stored UPPERCASE and compared case-insensitively.
+model Coupon {
+  id               String    @id @default(cuid()) @db.VarChar(64)
+  code             String    @unique @db.VarChar(191)
+  name             String    @db.VarChar(255)
+  type             String    @db.VarChar(64)
+  valueBp          Int?
+  valuePaise       Int?
+  minSubtotalPaise Int?
+  maxDiscountPaise Int?
+  usageLimit       Int?
+  perCustomerLimit Int?
+  /// Moves ONLY through CouponRedemptionService's compare-and-set guard.
+  usedCount        Int       @default(0)
+  startsAt         DateTime?
+  endsAt           DateTime?
+  isActive         Boolean   @default(true)
+  isStackable      Boolean   @default(false)
+  isAutoApply      Boolean   @default(false)
+  firstOrderOnly   Boolean   @default(false)
+  appliesToJson    String?   @db.LongText
+  description      String?   @db.Text
+  termsText        String?   @db.VarChar(1000)
+  version          Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  redemptions CouponRedemption[]
+
+  @@index([isActive, startsAt, endsAt])
+  @@index([isAutoApply, isActive])
+}
+
+/// Two-phase: RESERVED at checkout, CONFIRMED on payment, RELEASED on failure (Prompt 9 drives it).
+model CouponRedemption {
+  id          String    @id @default(cuid()) @db.VarChar(64)
+  couponId    String    @db.VarChar(64)
+  customerId  String?   @db.VarChar(64)
+  orderId     String?   @db.VarChar(191)
+  amountPaise Int       @default(0)
+  status      String    @default("RESERVED") @db.VarChar(64)
+  reservedAt  DateTime  @default(now())
+  confirmedAt DateTime?
+  releasedAt  DateTime?
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, orderId])
+  @@index([couponId, customerId])
+  @@index([status])
+}
+
+/// Automatic promotions ("buy any 2 chairs, 10% off"). Conditions and actions are validated JSON.
+model DiscountRule {
+  id               String    @id @default(cuid()) @db.VarChar(64)
+  code             String    @unique @db.VarChar(191)
+  name             String    @db.VarChar(255)
+  scope            String    @db.VarChar(64)
+  priority         Int       @default(100)
+  stopFurtherRules Boolean   @default(false)
+  conditionsJson   String    @db.LongText
+  actionsJson      String    @db.LongText
+  startsAt         DateTime?
+  endsAt           DateTime?
+  isActive         Boolean   @default(true)
+  usageLimit       Int?
+  usedCount        Int       @default(0)
+  version          Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  @@index([isActive, scope, priority])
+}
+
+model ShippingZone {
+  id        String    @id @default(cuid()) @db.VarChar(64)
+  code      String    @unique @db.VarChar(191)
+  name      String    @db.VarChar(255)
+  priority  Int       @default(100)
+  isActive  Boolean   @default(true)
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  pincodes ShippingPincode[]
+  ranges   ShippingPincodeRange[]
+  rates    ShippingRate[]
+
+  @@index([isActive, priority])
+}
+
+/// Exact pincode beats a range, which beats the default zone.
+model ShippingPincode {
+  id            String   @id @default(cuid()) @db.VarChar(64)
+  zoneId        String   @db.VarChar(64)
+  pincode       String   @unique @db.VarChar(191)
+  city          String?  @db.VarChar(120)
+  state         String?  @db.VarChar(64)
+  stateCode     String?  @db.VarChar(64)
+  isServiceable Boolean  @default(true)
+  codAvailable  Boolean  @default(false)
+  etaMinDays    Int?
+  etaMaxDays    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  zone ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId])
+}
+
+model ShippingPincodeRange {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  zoneId      String   @db.VarChar(64)
+  fromPincode String   @db.VarChar(191)
+  toPincode   String   @db.VarChar(191)
+  stateCode   String?  @db.VarChar(64)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  zone ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId])
+  @@index([fromPincode, toPincode])
+}
+
+/// A rate band within a zone: by cart PRICE, total WEIGHT or ITEM_COUNT.
+model ShippingRate {
+  id             String    @id @default(cuid()) @db.VarChar(64)
+  zoneId         String    @db.VarChar(64)
+  method         String    @db.VarChar(64)
+  name           String    @db.VarChar(255)
+  conditionType  String    @db.VarChar(64)
+  minValue       Int?
+  maxValue       Int?
+  basePaise      Int
+  perUnitPaise   Int?
+  freeAbovePaise Int?
+  etaMinDays     Int?
+  etaMaxDays     Int?
+  isActive       Boolean   @default(true)
+  priority       Int       @default(100)
+  version        Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  zone ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId, method, priority])
+}
+
+/// R9 — the entire mega-menu, footer and top bar are rendered from these two tables.
+/// Nothing in React may hardcode a menu entry.
+model NavigationMenu {
+  id        String   @id @default(cuid()) @db.VarChar(64)
+  key       String   @unique @db.VarChar(191)
+  name      String   @db.VarChar(255)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items NavigationItem[]
+}
+
+model NavigationItem {
+  id            String   @id @default(cuid()) @db.VarChar(64)
+  menuId        String   @db.VarChar(64)
+  parentId      String?  @db.VarChar(64)
+  label         String   @db.VarChar(255)
+  type          String   @default("CATEGORY") @db.VarChar(64)
+  position      Int      @default(0)
+  isActive      Boolean  @default(true)
+  isHighlighted Boolean  @default(false)
+  badgeText     String?  @db.VarChar(64)
+  badgeColor    String?  @db.VarChar(16)
+  url           String?  @db.VarChar(255)
+  categoryId    String?  @db.VarChar(64)
+  collectionId  String?  @db.VarChar(64)
+  leadFormKey   String?  @db.VarChar(64)
+  iconMediaId   String?  @db.VarChar(64)
+  menuColumn    Int?
+  openInNewTab  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  menu     NavigationMenu   @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  parent   NavigationItem?  @relation("NavigationTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children NavigationItem[] @relation("NavigationTree")
+
+  category   Category?   @relation(fields: [categoryId], references: [id])
+  collection Collection? @relation(fields: [collectionId], references: [id])
+
+  @@index([menuId, parentId, position])
+}
+
+// ===========================================================================
+// AUTH, RBAC & SESSIONS (Prompt 3)
+// Two independent realms (ADMIN / CUSTOMER) sharing one implementation: separate secrets,
+// audiences, cookie names and TTLs, but one RefreshToken table with a principalType
+// discriminator so rotation and reuse detection exist exactly once.
+// Passwords are argon2id hashes; refresh tokens are stored ONLY as sha256 hashes.
+// ===========================================================================
+
+model AdminUser {
+  id                 String    @id @default(cuid()) @db.VarChar(64)
+  email              String    @unique @db.VarChar(191)
+  phone              String?   @db.VarChar(191)
+  name               String    @db.VarChar(255)
+  passwordHash       String    @db.VarChar(255)
+  status             String    @default("INVITED") @db.VarChar(64)
+  avatarMediaId      String?   @db.VarChar(64)
+  mustChangePassword Boolean   @default(false)
+  lastLoginAt        DateTime?
+  lastLoginIp        String?   @db.VarChar(45)
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+  passwordChangedAt  DateTime?
+  invitedById        String?   @db.VarChar(64)
+  invitedAt          DateTime?
+  /// Bumped on any role/permission change so live access tokens are rejected immediately.
+  permissionVersion  Int       @default(1)
+  /// Reserved — 2FA is deferred.
+  twoFactorSecret    String?   @db.VarChar(255)
+  twoFactorEnabledAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  roles AdminUserRole[] @relation("AdminUserRoles")
+
+  @@index([status])
+}
+
+/// `isSystem` roles cannot be deleted and their `code` can never change.
+model Role {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  code        String   @unique @db.VarChar(191)
+  name        String   @db.VarChar(255)
+  description String?  @db.Text
+  isSystem    Boolean  @default(false)
+  position    Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions RolePermission[]
+  users       AdminUserRole[]
+
+  @@index([position])
+}
+
+model Permission {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  code        String   @unique @db.VarChar(191)
+  name        String   @db.VarChar(255)
+  group       String   @db.VarChar(64)
+  description String?  @db.Text
+  isDangerous Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roles RolePermission[]
+
+  @@index([group])
+}
+
+model RolePermission {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  roleId       String   @db.VarChar(64)
+  permissionId String   @db.VarChar(64)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model AdminUserRole {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  adminUserId  String   @db.VarChar(64)
+  roleId       String   @db.VarChar(64)
+  assignedById String?  @db.VarChar(64)
+  assignedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  adminUser AdminUser @relation("AdminUserRoles", fields: [adminUserId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([adminUserId, roleId])
+  @@index([roleId])
+}
+
+/// At least one of email/phone must be present — enforced by Zod and CustomerAuthService.
+/// `defaultAddressId` becomes a real FK in Prompt 8.
+model Customer {
+  id               String    @id @default(cuid()) @db.VarChar(64)
+  email            String?   @unique @db.VarChar(191)
+  phone            String?   @unique @db.VarChar(191)
+  name             String?   @db.VarChar(255)
+  passwordHash     String?   @db.VarChar(255)
+  status           String    @default("ACTIVE") @db.VarChar(64)
+  emailVerifiedAt  DateTime?
+  phoneVerifiedAt  DateTime?
+  defaultAddressId String?   @db.VarChar(64)
+  marketingOptIn   Boolean   @default(false)
+  acceptsWhatsapp  Boolean   @default(true)
+  lastLoginAt      DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  avatarMediaId    String?   @db.VarChar(64)
+  referralCode     String?   @unique @db.VarChar(191)
+  notesJson        String?   @db.LongText
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  addresses      Address[] @relation("CustomerAddresses")
+  defaultAddress Address?  @relation("CustomerDefaultAddress", fields: [defaultAddressId], references: [id])
+
+  @@index([status])
+  @@index([defaultAddressId])
+}
+
+/// Rotation: every refresh issues a new token in the SAME family and marks the old one used.
+/// Presenting an already-used token revokes the entire family (TOKEN_REUSE_DETECTED, 401).
+model RefreshToken {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  principalType String    @db.VarChar(64)
+  principalId   String    @db.VarChar(64)
+  tokenHash     String    @unique @db.Char(64)
+  familyId      String    @db.VarChar(64)
+  parentId      String?   @db.VarChar(64)
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  revokedReason String?   @db.VarChar(1000)
+  usedAt        DateTime?
+  ip            String?   @db.VarChar(45)
+  userAgent     String?   @db.VarChar(512)
+  deviceLabel   String?   @db.VarChar(255)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([principalType, principalId])
+  @@index([familyId])
+  @@index([expiresAt])
+}
+
+model OtpChallenge {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  channel       String    @db.VarChar(64)
+  purpose       String    @db.VarChar(191)
+  destination   String    @db.VarChar(191)
+  codeHash      String    @db.Char(64)
+  principalType String?   @db.VarChar(64)
+  principalId   String?   @db.VarChar(64)
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  lastSentAt    DateTime  @default(now())
+  resendCount   Int       @default(0)
+  ip            String?   @db.VarChar(45)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([destination, purpose])
+  @@index([expiresAt])
+}
+
+/// Single-use links: password reset, email verification, admin invite. Hashes only.
+model VerificationToken {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  purpose       String    @db.VarChar(191)
+  principalType String    @db.VarChar(64)
+  principalId   String    @db.VarChar(64)
+  tokenHash     String    @unique @db.Char(64)
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  metaJson      String?   @db.LongText
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([principalType, principalId, purpose])
+  @@index([expiresAt])
+}
+
+model LoginAttempt {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  realm      String   @db.VarChar(64)
+  identifier String   @db.VarChar(191)
+  success    Boolean
+  reason     String?  @db.VarChar(1000)
+  ip         String?  @db.VarChar(191)
+  userAgent  String?  @db.VarChar(512)
+  createdAt  DateTime @default(now())
+
+  @@index([identifier, createdAt])
+  @@index([ip, createdAt])
+}
+
+// ===========================================================================
+// STOREFRONT SEARCH (Prompt 7)
+// One denormalised document per indexed entity. The SQL search driver scans this table only,
+// so relevance never depends on a join and the whole index can be rebuilt from the catalog.
+// MySQL upgrade: add FULLTEXT(title, bodyText, keywordsText) and swap the LIKE scan for MATCH.
+// ===========================================================================
+
+model SearchDocument {
+  id              String   @id @default(cuid()) @db.VarChar(64)
+  entityType      String   @db.VarChar(191)
+  entityId        String   @db.VarChar(191)
+  title           String   @db.VarChar(255)
+  subtitle        String?  @db.VarChar(255)
+  bodyText        String   @db.Text
+  keywordsText    String   @db.Text
+  brandText       String?  @db.Text
+  categoryText    String   @db.Text
+  attributeText   String   @db.Text
+  sku             String?  @db.VarChar(191)
+  slug            String   @db.VarChar(191)
+  locale          String   @default("en") @db.VarChar(191)
+  /// Resolved by the P6 pricing facade for the DEFAULT customer group — never recomputed here.
+  minPricePaise   Int?
+  maxPricePaise   Int?
+  inStock         Boolean  @default(true)
+  isActive        Boolean  @default(true)
+  popularityScore Int      @default(0)
+  boostScore      Int      @default(0)
+  indexedAt       DateTime @default(now())
+  /// Hash of the document payload; an unchanged save is skipped instead of rewritten.
+  checksum        String   @db.Char(64)
+
+  @@unique([entityType, entityId, locale])
+  @@index([entityType, isActive])
+  @@index([slug])
+  @@index([popularityScore])
+  @@index([minPricePaise])
+}
+
+/// Admin-managed query expansion. Two-way entries also map a synonym back to the term.
+model SearchSynonym {
+  term         String   @id @db.VarChar(64)
+  synonymsJson String   @db.LongText
+  isTwoWay     Boolean  @default(true)
+  isActive     Boolean  @default(true)
+  note         String?  @db.VarChar(1000)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// Every storefront query, with the click that followed it. Feeds the synonym workflow.
+model SearchQueryLog {
+  id                String   @id @default(cuid()) @db.VarChar(64)
+  rawQuery          String   @db.VarChar(255)
+  normalizedQuery   String   @db.VarChar(191)
+  resultCount       Int      @default(0)
+  hasResults        Boolean  @default(false)
+  filtersJson       String?  @db.LongText
+  customerId        String?  @db.VarChar(64)
+  sessionId         String?  @db.VarChar(64)
+  ip                String?  @db.VarChar(45)
+  clickedEntityType String?  @db.VarChar(64)
+  clickedEntityId   String?  @db.VarChar(64)
+  clickPosition     Int?
+  createdAt         DateTime @default(now())
+
+  @@index([normalizedQuery, createdAt])
+  @@index([hasResults, createdAt])
+}
+
+/// One row per product. Written only by popularity.service; POPULARITY/BEST_SELLING sort from it.
+model ProductStat {
+  id              String    @id @default(cuid()) @db.VarChar(64)
+  productId       String    @unique @db.VarChar(64)
+  viewCount       Int       @default(0)
+  viewCount7d     Int       @default(0)
+  wishlistCount   Int       @default(0)
+  cartAddCount    Int       @default(0)
+  purchaseCount   Int       @default(0)
+  popularityScore Int       @default(0)
+  lastViewedAt    DateTime?
+  recomputedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([popularityScore])
+}
+
+/// Reindexing runs synchronously in chunks today; the row exists so Prompt 17 can move it to a
+/// queue without a migration.
+model SearchIndexJob {
+  id            String    @id @default(cuid()) @db.VarChar(64)
+  status        String    @default("PENDING") @db.VarChar(64)
+  entityType    String?   @db.VarChar(64)
+  isFull        Boolean   @default(false)
+  total         Int       @default(0)
+  processed     Int       @default(0)
+  failed        Int       @default(0)
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  errorsJson    String?   @db.LongText
+  triggeredById String?   @db.VarChar(64)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}
+
+// ===========================================================================
+// CART, WISHLIST & ADDRESSES (Prompt 8)
+// RULE 1: a cart never stores authoritative money. Every read re-quotes through the Prompt 6
+// engine; the amounts below are snapshots used only to detect drift and rebuild history.
+// RULE 2: a line is identified by a deterministic lineKey, so re-adding the same configuration
+// increments qty instead of creating a second row.
+// ===========================================================================
+
+model Cart {
+  id                      String    @id @default(cuid()) @db.VarChar(64)
+  customerId              String?   @db.VarChar(64)
+  sessionId               String?   @db.VarChar(64)
+  status                  String    @default("ACTIVE") @db.VarChar(64)
+  /// `c:<customerId>` or `s:<sessionId>` while ACTIVE, NULL otherwise. The unique index on it is
+  /// what makes "at most one ACTIVE cart per owner" a database guarantee rather than a hope:
+  /// NULLs are never compared, so any number of finished carts can coexist. Portable to MySQL 8,
+  /// which has no partial indexes.
+  activeOwnerKey          String?   @unique @db.VarChar(191)
+  channel                 String    @default("WEB") @db.VarChar(64)
+  currency                String    @default("INR") @db.VarChar(64)
+  couponCode              String?   @db.VarChar(64)
+  pincode                 String?   @db.VarChar(16)
+  customerGroupIdSnapshot String?   @db.VarChar(64)
+  itemCount               Int       @default(0)
+  quantityTotal           Int       @default(0)
+  lastQuotedTotalPaise    Int?
+  lastQuoteContextHash    String?   @db.Char(64)
+  lastQuotedAt            DateTime?
+  lastActivityAt          DateTime  @default(now())
+  expiresAt               DateTime?
+  mergedIntoCartId        String?   @db.VarChar(64)
+  convertedOrderId        String?   @db.VarChar(64)
+  notesJson               String?   @db.LongText
+  version                 Int       @default(0)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  items  CartItem[]
+  events CartEvent[]
+
+  @@index([customerId, status])
+  @@index([sessionId, status])
+  @@index([status, lastActivityAt])
+}
+
+model CartItem {
+  id                   String   @id @default(cuid()) @db.VarChar(64)
+  cartId               String   @db.VarChar(64)
+  /// sha256(productId | variantId | sorted optionValueIds | customizationHash)
+  lineKey              String   @db.VarChar(191)
+  productId            String   @db.VarChar(64)
+  variantId            String?  @db.VarChar(64)
+  qty                  Int      @default(1)
+  /// attributeValueIds, via jsonColumn<string[]> (D3)
+  selectedOptionsJson  String?  @db.LongText
+  /// Reserved for Prompt 11 — stored, hashed into the lineKey, never priced here.
+  customizationJson    String?  @db.LongText
+  customizationHash    String?  @db.Char(64)
+  saveState            String   @default("IN_CART") @db.VarChar(191)
+  /// SNAPSHOTS ONLY. Never rendered as the price; see RULE 1.
+  addedUnitPricePaise  Int      @default(0)
+  addedTotalPaise      Int      @default(0)
+  addedAt              DateTime @default(now())
+  lastUnitPricePaise   Int?
+  lastTotalPaise       Int?
+  productNameSnapshot  String   @db.VarChar(255)
+  variantNameSnapshot  String?  @db.VarChar(255)
+  skuSnapshot          String   @db.VarChar(191)
+  imageMediaIdSnapshot String?  @db.VarChar(255)
+  note                 String?  @db.VarChar(1000)
+  position             Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, lineKey])
+  @@index([cartId, saveState, position])
+  @@index([productId])
+}
+
+/// Lightweight audit of add/remove/qty/coupon/merge. Powers the admin abandoned-cart view and,
+/// later, recovery emails. AuditLog stays admin-only.
+model CartEvent {
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  cartId      String   @db.VarChar(64)
+  type        String   @db.VarChar(64)
+  payloadJson String?  @db.LongText
+  createdAt   DateTime @default(now())
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  @@index([cartId, createdAt])
+}
+
+model Wishlist {
+  id         String    @id @default(cuid()) @db.VarChar(64)
+  customerId String?   @db.VarChar(64)
+  sessionId  String?   @db.VarChar(64)
+  name       String    @default("My Wishlist") @db.VarChar(255)
+  isDefault  Boolean   @default(false)
+  isPublic   Boolean   @default(false)
+  shareToken String?   @unique @db.VarChar(191)
+  itemCount  Int       @default(0)
+  version    Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  items WishlistItem[]
+
+  @@index([customerId])
+  @@index([sessionId])
+}
+
+model WishlistItem {
+  id                  String    @id @default(cuid()) @db.VarChar(64)
+  wishlistId          String    @db.VarChar(64)
+  productId           String    @db.VarChar(64)
+  variantId           String?   @db.VarChar(64)
+  selectedOptionsJson String?   @db.LongText
+  lineKey             String    @db.VarChar(191)
+  priority            String    @default("NORMAL") @db.VarChar(64)
+  note                String?   @db.VarChar(1000)
+  /// Snapshot at save time; the price-drop flag compares it with a fresh quote.
+  addedPricePaise     Int       @default(0)
+  lastSeenPricePaise  Int?
+  priceDropNotifiedAt DateTime?
+  position            Int       @default(0)
+  addedAt             DateTime  @default(now())
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  wishlist Wishlist @relation(fields: [wishlistId], references: [id], onDelete: Cascade)
+
+  @@unique([wishlistId, lineKey])
+  @@index([productId])
+}
+
+/// Soft delete only: Prompt 9 snapshots an address onto an order, but a customer may still expect
+/// to see the row they ordered from, so it is never hard-deleted.
+model Address {
+  id                   String    @id @default(cuid()) @db.VarChar(64)
+  customerId           String    @db.VarChar(64)
+  label                String?   @db.VarChar(255)
+  type                 String    @default("HOME") @db.VarChar(64)
+  usage                String    @default("BOTH") @db.VarChar(64)
+  fullName             String    @db.VarChar(255)
+  phone                String    @db.VarChar(191)
+  altPhone             String?   @db.VarChar(191)
+  line1                String    @db.VarChar(1000)
+  line2                String?   @db.VarChar(1000)
+  landmark             String?   @db.VarChar(1000)
+  city                 String    @db.VarChar(120)
+  state                String    @db.VarChar(64)
+  stateCode            String    @db.VarChar(64)
+  pincode              String    @db.VarChar(191)
+  country              String    @default("IN") @db.VarChar(64)
+  isDefaultShipping    Boolean   @default(false)
+  isDefaultBilling     Boolean   @default(false)
+  deliveryInstructions String?   @db.VarChar(1000)
+  latitude             Float?
+  longitude            Float?
+  isVerified           Boolean   @default(false)
+  version              Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  deletedAt            DateTime?
+
+  customer     Customer   @relation("CustomerAddresses", fields: [customerId], references: [id], onDelete: Cascade)
+  defaultedFor Customer[] @relation("CustomerDefaultAddress")
+
+  @@index([customerId])
+  @@index([pincode])
+}
+
+model RecentlyViewed {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  customerId String?  @db.VarChar(191)
+  sessionId  String?  @db.VarChar(191)
+  productId  String   @db.VarChar(191)
+  variantId  String?  @db.VarChar(64)
+  viewCount  Int      @default(1)
+  viewedAt   DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, productId])
+  @@unique([sessionId, productId])
+  @@index([customerId, viewedAt])
+  @@index([sessionId, viewedAt])
+}
+
+// ---------------------------------------------------------------------------
+// PROMPT 9A — orders, the payment ledger and the Razorpay Route split.
+//
+// Order -> Payment -> PaymentTransfer -> Settlement, and Refund -> TransferReversal (L4).
+// Products and variants are referenced from OrderItem BY SNAPSHOT (id + sku + name + the frozen
+// components JSON), never by a hard FK, so catalog edits can never mutate a historical order (L2).
+// ---------------------------------------------------------------------------
+
+/// One row per financial year. `lastNumber` is bumped by a compare-and-set inside the order
+/// transaction, so two concurrent checkouts can never be handed the same number.
+model OrderSequence {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  key        String   @unique @db.VarChar(191)
+  lastNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+model Order {
+  id          String  @id @default(cuid()) @db.VarChar(64)
+  orderNumber String  @unique @db.VarChar(191)
+  customerId  String? @db.VarChar(64)
+  cartId      String? @db.VarChar(64)
+
+  isGuest    Boolean @default(false)
+  guestEmail String? @db.VarChar(191)
+  guestPhone String? @db.VarChar(32)
+  guestName  String? @db.VarChar(255)
+
+  status            String @default("DRAFT") @db.VarChar(64)
+  paymentStatus     String @default("PENDING") @db.VarChar(64)
+  fulfillmentStatus String @default("UNFULFILLED") @db.VarChar(64)
+
+  channel  String @default("WEB") @db.VarChar(64)
+  currency String @default("INR") @db.VarChar(64)
+
+  customerGroupCode String? @db.VarChar(64)
+  placeOfSupply     String  @db.VarChar(64)
+  sellerStateCode   String  @db.VarChar(64)
+
+  subtotalPaise       Int
+  discountPaise       Int
+  shippingPaise       Int
+  taxPaise            Int
+  cgstPaise           Int @default(0)
+  sgstPaise           Int @default(0)
+  igstPaise           Int @default(0)
+  roundingPaise       Int @default(0)
+  grandTotalPaise     Int
+  totalSavingsPaise   Int @default(0)
+  paidPaise           Int @default(0)
+  refundedPaise       Int @default(0)
+  /// H7 - capacity claimed by refunds in flight. Reserve -> confirm/release, exactly like
+  /// StockReservation: a refund that has not yet landed still consumes what it might take.
+  refundReservedPaise Int @default(0)
+  duePaise            Int @default(0)
+
+  couponCode         String? @db.VarChar(64)
+  appliedRuleIdsJson String? @db.LongText
+
+  /// The ENTIRE frozen PriceBreakdown. Order reads render this, never a fresh quote (L2).
+  breakdownJson        String @db.LongText
+  pricingEngineVersion String @db.VarChar(64)
+  pricingContextHash   String @db.Char(64)
+
+  customerNote String? @db.VarChar(1000)
+  internalNote String? @db.VarChar(1000)
+  giftMessage  String? @db.VarChar(1000)
+
+  ipAddress String? @db.VarChar(45)
+  userAgent String? @db.VarChar(512)
+  referrer  String? @db.VarChar(512)
+  utmJson   String? @db.LongText
+
+  placedAt     DateTime?
+  confirmedAt  DateTime?
+  cancelledAt  DateTime?
+  cancelReason String?   @db.VarChar(1000)
+  /// When a PENDING_PAYMENT hold lapses and the reconciliation sweep may release it (L5).
+  expiresAt    DateTime?
+
+  estimatedDeliveryMinDays Int?
+  estimatedDeliveryMaxDays Int?
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items        OrderItem[]
+  addresses    OrderAddress[]
+  history      OrderStatusHistory[]
+  payments     Payment[]
+  allocations  SplitAllocation[]
+  refunds      Refund[]
+  reservations StockReservation[]
+  shipments    Shipment[]
+  returns      ReturnRequest[]
+  documents    OrderDocument[]
+  notes        OrderNote[]
+
+  @@index([customerId, createdAt])
+  @@index([status, createdAt])
+  @@index([paymentStatus])
+  @@index([orderNumber])
+  @@index([status, expiresAt])
+}
+
+model OrderItem {
+  orderId   String  @db.VarChar(64)
+  id        String  @id @default(cuid()) @db.VarChar(64)
+  productId String  @db.VarChar(64)
+  variantId String? @db.VarChar(64)
+
+  sku                 String  @db.VarChar(191)
+  productName         String  @db.VarChar(255)
+  variantName         String? @db.VarChar(255)
+  brandName           String? @db.VarChar(255)
+  primaryCategoryPath String? @db.VarChar(255)
+  imageMediaId        String? @db.VarChar(64)
+  imageUrlSnapshot    String? @db.VarChar(255)
+
+  selectedOptionsJson String? @db.LongText
+  optionLabelsJson    String? @db.LongText
+  customizationJson   String? @db.LongText
+  customizationHash   String? @db.Char(64)
+
+  qty                Int
+  unitPricePaise     Int
+  baseUnitPricePaise Int
+  lineSubtotalPaise  Int
+  lineDiscountPaise  Int     @default(0)
+  taxablePaise       Int
+  taxPaise           Int
+  taxRateBp          Int     @default(0)
+  cgstPaise          Int     @default(0)
+  sgstPaise          Int     @default(0)
+  igstPaise          Int     @default(0)
+  hsnCode            String? @db.VarChar(64)
+  lineTotalPaise     Int
+
+  /// The frozen per-line components[] from the engine.
+  componentsJson String @db.LongText
+
+  isMadeToOrder Boolean @default(false)
+  leadTimeDays  Int?
+  weightGrams   Int?
+
+  fulfilledQty        Int @default(0)
+  cancelledQty        Int @default(0)
+  refundedQty         Int @default(0)
+  refundedAmountPaise Int @default(0)
+
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  order         Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refundItems   RefundItem[]
+  reservations  StockReservation[]
+  shipmentItems ShipmentItem[]
+  returnItems   ReturnItem[]
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+/// Always a SNAPSHOT: editing or deleting the source Address must never change a placed order.
+model OrderAddress {
+  id              String  @id @default(cuid()) @db.VarChar(64)
+  orderId         String  @db.VarChar(64)
+  type            String  @db.VarChar(191)
+  sourceAddressId String? @db.VarChar(64)
+
+  fullName             String  @db.VarChar(255)
+  phone                String  @db.VarChar(191)
+  altPhone             String? @db.VarChar(191)
+  line1                String  @db.VarChar(1000)
+  line2                String? @db.VarChar(1000)
+  landmark             String? @db.VarChar(1000)
+  city                 String  @db.VarChar(120)
+  state                String  @db.VarChar(64)
+  stateCode            String  @db.VarChar(64)
+  pincode              String  @db.VarChar(16)
+  country              String  @default("IN") @db.VarChar(64)
+  deliveryInstructions String? @db.VarChar(1000)
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, type])
+}
+
+model OrderStatusHistory {
+  id                String   @id @default(cuid()) @db.VarChar(64)
+  orderId           String   @db.VarChar(64)
+  fromStatus        String?  @db.VarChar(64)
+  toStatus          String   @db.VarChar(64)
+  note              String?  @db.VarChar(1000)
+  actorType         String   @default("SYSTEM") @db.VarChar(64)
+  actorId           String?  @db.VarChar(64)
+  actorName         String?  @db.VarChar(255)
+  metaJson          String?  @db.LongText
+  isCustomerVisible Boolean  @default(true)
+  createdAt         DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+/// One order may have many attempts; AT MOST ONE may be CAPTURED — enforced in the service.
+model Payment {
+  id            String  @id @default(cuid()) @db.VarChar(64)
+  orderId       String  @db.VarChar(64)
+  provider      String  @db.VarChar(191)
+  method        String? @db.VarChar(64)
+  methodDetail  String? @db.VarChar(255)
+  status        String  @default("PENDING") @db.VarChar(64)
+  attemptNumber Int     @default(1)
+
+  amountPaise   Int
+  capturedPaise Int  @default(0)
+  refundedPaise Int  @default(0)
+  feePaise      Int?
+  taxOnFeePaise Int?
+
+  providerOrderId   String? @db.VarChar(64)
+  providerPaymentId String? @db.VarChar(191)
+  providerSignature String? @db.VarChar(255)
+  currency          String  @default("INR") @db.VarChar(64)
+
+  authorizedAt DateTime?
+  capturedAt   DateTime?
+  failedAt     DateTime?
+
+  errorCode        String? @db.VarChar(64)
+  errorDescription String? @db.Text
+  errorSource      String? @db.VarChar(64)
+  errorStep        String? @db.VarChar(64)
+  errorReason      String? @db.VarChar(1000)
+
+  isTransferable  Boolean @default(true)
+  idempotencyKey  String? @db.VarChar(191)
+  /// REDACTED before storage — never a card number, never a secret.
+  rawResponseJson String? @db.LongText
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order       Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  transfers   PaymentTransfer[]
+  allocations SplitAllocation[]
+  refunds     Refund[]
+
+  @@unique([provider, providerPaymentId])
+  @@index([orderId, attemptNumber])
+  @@index([status])
+}
+
+/// A logical payout destination. The provider id lives in the DB so an admin can change it without
+/// a redeploy; it is seeded from RAZORPAY_ACCOUNT_* on first run and then never overwritten.
+model SplitAccount {
+  key               String  @unique @db.VarChar(191)
+  id                String  @id @default(cuid()) @db.VarChar(64)
+  name              String  @db.VarChar(255)
+  providerAccountId String  @db.VarChar(64)
+  isActive          Boolean @default(true)
+  isPrimary         Boolean @default(false)
+  notes             String? @db.VarChar(1000)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  allocations SplitAllocation[]
+  transfers   PaymentTransfer[]
+}
+
+model SplitRule {
+  id            String  @id @default(cuid()) @db.VarChar(64)
+  code          String  @unique @db.VarChar(191)
+  name          String  @db.VarChar(255)
+  scope         String  @default("GLOBAL") @db.VarChar(64)
+  scopeEntityId String? @db.VarChar(64)
+  basis         String  @default("ORDER_TOTAL") @db.VarChar(64)
+
+  mode       String @db.VarChar(64)
+  valuePaise Int?
+  valueBp    Int?
+
+  /// The SplitAccount.key this rule pays. Resolved to a provider id at transfer time.
+  recipientKey String  @db.VarChar(64)
+  priority     Int     @default(100)
+  isActive     Boolean @default(true)
+
+  startsAt         DateTime?
+  endsAt           DateTime?
+  minOrderPaise    Int?
+  maxTransferPaise Int?
+  onHold           Boolean   @default(false)
+  onHoldUntil      DateTime?
+  notes            String?   @db.VarChar(1000)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  allocations SplitAllocation[]
+
+  @@index([scope, isActive, priority])
+}
+
+/// Computed and persisted BEFORE the provider is called, so the intent is auditable even when the
+/// provider call fails. Zero-value rows are kept for audit but never sent to a provider.
+model SplitAllocation {
+  id             String  @id @default(cuid()) @db.VarChar(64)
+  orderId        String  @db.VarChar(64)
+  paymentId      String? @db.VarChar(64)
+  splitAccountId String  @db.VarChar(64)
+  splitRuleId    String? @db.VarChar(64)
+  orderItemId    String? @db.VarChar(64)
+
+  amountPaise      Int
+  basisAmountPaise Int
+  mode             String  @db.VarChar(64)
+  sequence         Int     @default(0)
+  isRemainder      Boolean @default(false)
+  note             String? @db.VarChar(1000)
+  computedAtHash   String  @db.Char(64)
+
+  createdAt DateTime @default(now())
+
+  order    Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  payment  Payment?         @relation(fields: [paymentId], references: [id])
+  account  SplitAccount     @relation(fields: [splitAccountId], references: [id])
+  rule     SplitRule?       @relation(fields: [splitRuleId], references: [id])
+  transfer PaymentTransfer?
+
+  @@index([orderId])
+  @@index([paymentId])
+}
+
+model PaymentTransfer {
+  id                String  @id @default(cuid()) @db.VarChar(64)
+  paymentId         String  @db.VarChar(64)
+  splitAllocationId String? @unique @db.VarChar(64)
+  splitAccountId    String  @db.VarChar(64)
+
+  providerTransferId String? @unique @db.VarChar(191)
+  amountPaise        Int
+  feePaise           Int?
+  taxPaise           Int?
+
+  status                String    @default("PENDING") @db.VarChar(64)
+  onHold                Boolean   @default(false)
+  onHoldUntil           DateTime?
+  reversedPaise         Int       @default(0)
+  /// H7 - the same two-phase claim for reversal capacity.
+  reversalReservedPaise Int       @default(0)
+  settlementStatus      String?   @db.VarChar(64)
+
+  providerRecipientId String  @db.VarChar(64)
+  notesJson           String? @db.LongText
+  rawResponseJson     String? @db.LongText
+
+  processedAt      DateTime?
+  failedAt         DateTime?
+  errorCode        String?   @db.VarChar(64)
+  errorDescription String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payment    Payment            @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  allocation SplitAllocation?   @relation(fields: [splitAllocationId], references: [id])
+  account    SplitAccount       @relation(fields: [splitAccountId], references: [id])
+  reversals  TransferReversal[]
+
+  @@index([paymentId])
+  @@index([status])
+}
+
+model Refund {
+  id           String @id @default(cuid()) @db.VarChar(64)
+  orderId      String @db.VarChar(64)
+  paymentId    String @db.VarChar(64)
+  refundNumber String @unique @db.VarChar(191)
+
+  amountPaise Int
+  status      String  @default("REQUESTED") @db.VarChar(64)
+  reason      String  @db.VarChar(1000)
+  reasonNote  String? @db.VarChar(1000)
+  speed       String  @default("NORMAL") @db.VarChar(64)
+
+  providerRefundId String? @unique @db.VarChar(191)
+  isFullRefund     Boolean @default(false)
+
+  /// Sent to the provider as a client reference so a retry can FIND the original instead of
+  /// creating a second one. Deterministic, and never reused.
+  clientReference String? @unique @db.VarChar(191)
+
+  /// H1 - the mutual-exclusion claim. Prompt 17 runs PM2 with several workers, so a process-local
+  /// lock protects nothing; only a conditional UPDATE does.
+  executionLockedAt DateTime?
+  executionAttempt  Int       @default(0)
+
+  /// H7 - whether this refund currently holds capacity on the order and its transfers, and
+  /// whether that hold has been converted into settled money.
+  capacityReserved  Boolean @default(false)
+  capacityConfirmed Boolean @default(false)
+
+  /// Set when the provider reverses linked-account transfers itself, so we do not also reverse
+  /// them and double-count.
+  reversalStrategy String @default("EXPLICIT") @db.VarChar(64)
+
+  requestedById   String?   @db.VarChar(64)
+  requestedByType String    @default("CUSTOMER") @db.VarChar(64)
+  approvedById    String?   @db.VarChar(64)
+  approvedAt      DateTime?
+  processedAt     DateTime?
+  failedAt        DateTime?
+
+  errorCode        String? @db.VarChar(64)
+  errorDescription String? @db.Text
+
+  restockRequested Boolean   @default(true)
+  restockedAt      DateTime?
+
+  rawResponseJson String? @db.LongText
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order     Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  payment   Payment            @relation(fields: [paymentId], references: [id])
+  items     RefundItem[]
+  reversals TransferReversal[]
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model RefundItem {
+  id          String @id @default(cuid()) @db.VarChar(64)
+  refundId    String @db.VarChar(64)
+  orderItemId String @db.VarChar(64)
+  qty         Int
+  amountPaise Int
+  taxPaise    Int    @default(0)
+
+  refund    Refund    @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+
+  @@index([refundId])
+}
+
+model TransferReversal {
+  id                 String  @id @default(cuid()) @db.VarChar(64)
+  paymentTransferId  String  @db.VarChar(64)
+  refundId           String? @db.VarChar(64)
+  providerReversalId String? @unique @db.VarChar(191)
+
+  amountPaise      Int
+  status           String    @default("PENDING") @db.VarChar(64)
+  processedAt      DateTime?
+  errorCode        String?   @db.VarChar(64)
+  errorDescription String?   @db.Text
+  rawResponseJson  String?   @db.LongText
+
+  createdAt DateTime @default(now())
+
+  transfer PaymentTransfer @relation(fields: [paymentTransferId], references: [id], onDelete: Cascade)
+  refund   Refund?         @relation(fields: [refundId], references: [id])
+
+  @@index([paymentTransferId])
+}
+
+model Settlement {
+  id                   String @id @default(cuid()) @db.VarChar(64)
+  provider             String @db.VarChar(64)
+  providerSettlementId String @unique @db.VarChar(191)
+
+  amountPaise Int
+  feePaise    Int     @default(0)
+  taxPaise    Int     @default(0)
+  utr         String? @db.VarChar(64)
+  status      String  @default("PENDING") @db.VarChar(64)
+
+  settledAt       DateTime?
+  rawResponseJson String?   @db.LongText
+
+  createdAt DateTime @default(now())
+
+  entries SettlementEntry[]
+
+  @@index([status])
+}
+
+model SettlementEntry {
+  id           String @id @default(cuid()) @db.VarChar(64)
+  settlementId String @db.VarChar(64)
+  entityType   String @db.VarChar(64)
+  entityId     String @db.VarChar(64)
+  amountPaise  Int
+  feePaise     Int?
+  taxPaise     Int?
+
+  settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+
+  @@index([settlementId])
+  @@index([entityType, entityId])
+}
+
+/// L3 — every provider event is persisted BEFORE it is acted on, and the same event id can only
+/// ever change state once.
+model WebhookEvent {
+  id              String  @id @default(cuid()) @db.VarChar(64)
+  provider        String  @db.VarChar(191)
+  providerEventId String  @db.VarChar(191)
+  eventType       String  @db.VarChar(64)
+  signatureValid  Boolean @default(false)
+  status          String  @default("RECEIVED") @db.VarChar(64)
+  attempts        Int     @default(0)
+
+  /// REDACTED before storage.
+  payloadJson String @db.LongText
+
+  relatedEntityType String? @db.VarChar(64)
+  relatedEntityId   String? @db.VarChar(64)
+
+  receivedAt         DateTime  @default(now())
+  processedAt        DateTime?
+  errorMessage       String?   @db.VarChar(1000)
+  /// Compare-and-set lock so concurrent deliveries of the same event serialise.
+  processingLockedAt DateTime?
+
+  @@unique([provider, providerEventId])
+  @@index([status, receivedAt])
+  @@index([eventType])
+}
+
+/// Mirrors exactly what was handed to inventory.service.reserve(), so the sweep knows what to
+/// release. Stock itself is NEVER written here — inventory.service remains the only path (L5).
+model StockReservation {
+  id          String  @id @default(cuid()) @db.VarChar(64)
+  orderId     String  @db.VarChar(64)
+  orderItemId String? @db.VarChar(64)
+  variantId   String  @db.VarChar(64)
+  qty         Int
+  status      String  @default("RESERVED") @db.VarChar(64)
+
+  reservedAt    DateTime  @default(now())
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  releasedAt    DateTime?
+  releaseReason String?   @db.VarChar(1000)
+
+  inventoryLedgerIdOnConsume String? @db.VarChar(64)
+
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id])
+
+  @@index([orderId])
+  @@index([variantId, status])
+  @@index([status, expiresAt])
+}
+
+/// Holds a checkout in progress so "the price changed while you were on the payment page" is a
+/// detectable event rather than a silent overcharge.
+model CheckoutSession {
+  id         String  @id @default(cuid()) @db.VarChar(64)
+  cartId     String  @db.VarChar(64)
+  customerId String? @db.VarChar(64)
+  sessionId  String? @db.VarChar(64)
+  step       String  @default("CART") @db.VarChar(64)
+  orderId    String? @db.VarChar(64)
+
+  shippingAddressId String? @db.VarChar(64)
+  billingAddressId  String? @db.VarChar(64)
+  sameAsShipping    Boolean @default(true)
+  /// Inline addresses for guests, snapshotted onto the order at placement.
+  addressesJson     String? @db.LongText
+
+  paymentProvider   String? @db.VarChar(64)
+  paymentMethodHint String? @db.VarChar(64)
+  contactEmail      String? @db.VarChar(191)
+  contactPhone      String? @db.VarChar(32)
+  customerNote      String? @db.VarChar(1000)
+  giftMessage       String? @db.VarChar(1000)
+
+  quoteHash        String   @db.Char(64)
+  quotedTotalPaise Int
+  quotedAt         DateTime @default(now())
+
+  expiresAt DateTime
+  status    String   @default("ACTIVE") @db.VarChar(64)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cartId])
+  @@index([status, expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// PROMPT 9B — fulfilment, shipments, returns, documents and notifications.
+//
+// THE RULE: the local Shipment is ClearWood's source of truth. `provider*` columns are external
+// references we keep so we can talk to a courier — never fields a courier can use to rewrite an
+// order. Provider shipping cost is an OPERATIONAL cost and never touches the frozen order money.
+// ---------------------------------------------------------------------------
+
+/// A logistics integration. `driver` selects the implementation; credentials live in
+/// ShippingProviderConfig and are never returned by any read endpoint.
+model ShippingProvider {
+  id     String @id @default(cuid()) @db.VarChar(64)
+  code   String @unique @db.VarChar(191)
+  name   String @db.VarChar(255)
+  driver String @db.VarChar(64)
+
+  isActive  Boolean @default(false)
+  isDefault Boolean @default(false)
+
+  capabilitiesJson String?   @db.LongText
+  lastHealthyAt    DateTime?
+  lastErrorAt      DateTime?
+  lastError        String?   @db.Text
+  notes            String?   @db.VarChar(1000)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  configs         ShippingProviderConfig[]
+  pickupLocations PickupLocation[]
+  shipments       Shipment[]
+  operations      ProviderOperation[]
+
+  @@index([isActive])
+}
+
+/// One secret per row so a single value can be rotated, and so `isSecret` rows can be filtered out
+/// of every read path in one place.
+model ShippingProviderConfig {
+  id         String  @id @default(cuid()) @db.VarChar(64)
+  providerId String  @db.VarChar(64)
+  key        String  @db.VarChar(191)
+  value      String  @db.Text
+  isSecret   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  provider ShippingProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, key])
+}
+
+model PickupLocation {
+  id                 String  @id @default(cuid()) @db.VarChar(64)
+  code               String  @unique @db.VarChar(191)
+  name               String  @db.VarChar(255)
+  providerId         String? @db.VarChar(64)
+  /// The provider's own handle for this pickup point (Shiprocket addresses it by nickname).
+  providerLocationId String? @db.VarChar(64)
+
+  contactName String  @db.VarChar(255)
+  phone       String  @db.VarChar(191)
+  email       String? @db.VarChar(191)
+  line1       String  @db.VarChar(1000)
+  line2       String? @db.VarChar(1000)
+  city        String  @db.VarChar(120)
+  state       String  @db.VarChar(64)
+  stateCode   String  @db.VarChar(64)
+  pincode     String  @db.VarChar(16)
+  country     String  @default("IN") @db.VarChar(64)
+
+  isActive  Boolean @default(true)
+  isDefault Boolean @default(false)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  provider  ShippingProvider? @relation(fields: [providerId], references: [id])
+  shipments Shipment[]
+
+  @@index([isActive])
+}
+
+/// A journal of every externally mutating provider call, so a timeout can be reconciled instead of
+/// retried blindly into a duplicate shipment.
+model ProviderOperation {
+  id             String  @id @default(cuid()) @db.VarChar(64)
+  providerId     String? @db.VarChar(64)
+  providerCode   String  @db.VarChar(64)
+  operation      String  @db.VarChar(64)
+  entityType     String  @db.VarChar(64)
+  entityId       String  @db.VarChar(64)
+  /// Stable per logical call: the same key must never create a second provider order.
+  idempotencyKey String  @unique @db.VarChar(191)
+
+  status       String  @default("PENDING") @db.VarChar(64)
+  attempt      Int     @default(1)
+  failureKind  String? @db.VarChar(64)
+  errorMessage String? @db.VarChar(1000)
+  /// REDACTED before storage.
+  responseJson String? @db.LongText
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  provider ShippingProvider? @relation(fields: [providerId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([status, startedAt])
+}
+
+model Shipment {
+  id              String  @id @default(cuid()) @db.VarChar(64)
+  shipmentNumber  String  @unique @db.VarChar(191)
+  orderId         String  @db.VarChar(64)
+  returnRequestId String? @db.VarChar(64)
+
+  direction String @default("FORWARD") @db.VarChar(64)
+  status    String @default("DRAFT") @db.VarChar(64)
+
+  providerId           String?   @db.VarChar(64)
+  providerCode         String    @default("MANUAL") @db.VarChar(191)
+  /// The provider's order id — Shiprocket's `order_id` FROM the response, not our reference.
+  providerOrderId      String?   @db.VarChar(64)
+  providerShipmentId   String?   @db.VarChar(191)
+  providerCourierId    String?   @db.VarChar(64)
+  providerCourierName  String?   @db.VarChar(255)
+  awbNumber            String?   @db.VarChar(191)
+  /// The courier's own status text and code, for diagnostics only.
+  providerStatus       String?   @db.VarChar(64)
+  providerStatusCode   String?   @db.VarChar(64)
+  providerCreatedAt    DateTime?
+  providerUpdatedAt    DateTime?
+  /// Non-sensitive provider metadata only, via jsonColumn (D3).
+  providerMetadataJson String?   @db.LongText
+
+  isCod             Boolean @default(false)
+  codAmountPaise    Int     @default(0)
+  /// What the courier charges US. Never part of the customer's order total.
+  shippingCostPaise Int     @default(0)
+
+  weightGrams        Int    @default(0)
+  lengthMm           Int    @default(0)
+  widthMm            Int    @default(0)
+  heightMm           Int    @default(0)
+  packageCount       Int    @default(1)
+  packagingType      String @default("BOX") @db.VarChar(64)
+  declaredValuePaise Int    @default(0)
+
+  pickupLocationId  String?   @db.VarChar(64)
+  pickupScheduledAt DateTime?
+  pickupTokenNumber String?   @db.VarChar(64)
+
+  estimatedDeliveryAt DateTime?
+  shippedAt           DateTime?
+  deliveredAt         DateTime?
+  cancelledAt         DateTime?
+  cancelReason        String?   @db.VarChar(1000)
+
+  labelDocumentId    String? @db.VarChar(64)
+  manifestDocumentId String? @db.VarChar(64)
+
+  lastSyncedAt DateTime?
+  internalNote String?   @db.VarChar(1000)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order          Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  provider       ShippingProvider? @relation(fields: [providerId], references: [id])
+  pickupLocation PickupLocation?   @relation(fields: [pickupLocationId], references: [id])
+  returnRequest  ReturnRequest?    @relation(fields: [returnRequestId], references: [id])
+
+  items     ShipmentItem[]
+  events    ShipmentEvent[]
+  ndrs      NdrRecord[]
+  documents OrderDocument[]
+
+  @@unique([providerCode, providerShipmentId])
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@index([awbNumber])
+  @@index([providerCode, providerOrderId])
+}
+
+model ShipmentItem {
+  id          String @id @default(cuid()) @db.VarChar(64)
+  shipmentId  String @db.VarChar(64)
+  orderItemId String @db.VarChar(64)
+  qty         Int
+
+  /// Snapshotted so a packing slip reads the same forever.
+  sku         String  @db.VarChar(191)
+  productName String  @db.VarChar(255)
+  variantName String? @db.VarChar(255)
+
+  shipment  Shipment  @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id])
+
+  @@unique([shipmentId, orderItemId])
+  @@index([orderItemId])
+}
+
+model ShipmentEvent {
+  id         String @id @default(cuid()) @db.VarChar(64)
+  shipmentId String @db.VarChar(64)
+
+  status             String? @db.VarChar(64)
+  providerStatus     String? @db.VarChar(64)
+  providerStatusCode String? @db.VarChar(64)
+  description        String  @db.Text
+  location           String? @db.VarChar(255)
+  source             String  @default("SYSTEM") @db.VarChar(64)
+  /// Dedupe key for provider scans, so a replayed webhook cannot double a timeline.
+  dedupeKey          String? @db.VarChar(191)
+
+  isCustomerVisible Boolean  @default(true)
+  occurredAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, dedupeKey])
+  @@index([shipmentId, occurredAt])
+}
+
+model NdrRecord {
+  id         String @id @default(cuid()) @db.VarChar(64)
+  shipmentId String @db.VarChar(64)
+
+  reason       String  @db.VarChar(1000)
+  reasonCode   String? @db.VarChar(64)
+  attemptCount Int     @default(1)
+  status       String  @default("OPEN") @db.VarChar(64)
+
+  actionTaken String?   @db.VarChar(64)
+  actionNote  String?   @db.VarChar(1000)
+  actedById   String?   @db.VarChar(64)
+  actedAt     DateTime?
+
+  /// Provider event identity, so the same NDR is never raised twice.
+  providerNdrId String?  @db.VarChar(191)
+  raisedAt      DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@unique([shipmentId, providerNdrId])
+  @@index([status, raisedAt])
+}
+
+model ReturnRequest {
+  id           String  @id @default(cuid()) @db.VarChar(64)
+  returnNumber String  @unique @db.VarChar(191)
+  orderId      String  @db.VarChar(64)
+  customerId   String? @db.VarChar(64)
+
+  status     String  @default("REQUESTED") @db.VarChar(64)
+  reason     String  @db.VarChar(1000)
+  reasonNote String? @db.VarChar(1000)
+  resolution String  @default("REFUND") @db.VarChar(64)
+  isExchange Boolean @default(false)
+
+  /// All three are derived from the FROZEN order lines, never re-priced.
+  requestedAmountPaise Int @default(0)
+  approvedAmountPaise  Int @default(0)
+  refundedAmountPaise  Int @default(0)
+
+  refundId String? @db.VarChar(64)
+
+  requestedByType String    @default("CUSTOMER") @db.VarChar(64)
+  requestedById   String?   @db.VarChar(64)
+  approvedById    String?   @db.VarChar(64)
+  approvedAt      DateTime?
+  rejectedReason  String?   @db.VarChar(1000)
+  receivedAt      DateTime?
+  inspectedAt     DateTime?
+  completedAt     DateTime?
+  internalNote    String?   @db.VarChar(1000)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order     Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  items     ReturnItem[]
+  shipments Shipment[]
+
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@index([customerId])
+}
+
+model ReturnItem {
+  id              String @id @default(cuid()) @db.VarChar(64)
+  returnRequestId String @db.VarChar(64)
+  orderItemId     String @db.VarChar(64)
+
+  qtyRequested Int
+  qtyApproved  Int @default(0)
+  qtyReceived  Int @default(0)
+  qtyRestocked Int @default(0)
+
+  condition        String  @default("PENDING") @db.VarChar(64)
+  inspectionNote   String? @db.VarChar(1000)
+  /// The inspector's decision, separate from the condition: goods can be resellable and still not
+  /// wanted back in stock (a discontinued line, say).
+  restockRequested Boolean @default(false)
+
+  /// Copied from the frozen OrderItem at request time. The refund maths reads these.
+  unitPricePaise        Int
+  refundableAmountPaise Int @default(0)
+  refundableTaxPaise    Int @default(0)
+
+  sku         String  @db.VarChar(191)
+  productName String  @db.VarChar(255)
+  variantName String? @db.VarChar(255)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  returnRequest ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Cascade)
+  orderItem     OrderItem     @relation(fields: [orderItemId], references: [id])
+
+  @@unique([returnRequestId, orderItemId])
+  @@index([orderItemId])
+}
+
+/// Gapless per-series numbering for GST documents. Compare-and-set, exactly like OrderSequence.
+model DocumentSequence {
+  id         String   @id @default(cuid()) @db.VarChar(64)
+  key        String   @unique @db.VarChar(191)
+  prefix     String   @db.VarChar(64)
+  lastNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+/// An immutable, checksummed artefact stored through the StorageDriver. A tax invoice is never
+/// regenerated: if the bytes must change, a credit note is issued instead.
+model OrderDocument {
+  id              String  @id @default(cuid()) @db.VarChar(64)
+  orderId         String  @db.VarChar(64)
+  shipmentId      String? @db.VarChar(64)
+  returnRequestId String? @db.VarChar(64)
+  /// A credit note belongs to exactly one refund. Unique, so a retry cannot issue a second.
+  refundId        String? @unique @db.VarChar(191)
+
+  type           String  @db.VarChar(64)
+  documentNumber String? @unique @db.VarChar(191)
+  storageKey     String  @db.VarChar(512)
+  mimeType       String  @default("application/pdf") @db.VarChar(64)
+  sizeBytes      Int     @default(0)
+  /// SHA-256 of the stored bytes.
+  checksum       String  @db.Char(64)
+
+  /// Frozen totals as printed, so a document can be verified without re-reading the order.
+  totalPaise Int @default(0)
+  taxPaise   Int @default(0)
+
+  issuedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  order    Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  shipment Shipment? @relation(fields: [shipmentId], references: [id])
+
+  @@index([orderId, type])
+  @@index([shipmentId])
+}
+
+model NotificationTemplate {
+  id      String @id @default(cuid()) @db.VarChar(64)
+  event   String @db.VarChar(191)
+  channel String @db.VarChar(191)
+
+  subject  String? @db.VarChar(255)
+  body     String  @db.Text
+  isActive Boolean @default(true)
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([event, channel])
+}
+
+/// Every attempt, including the ones that failed. A notification failure must never fail an order,
+/// so the only trace it leaves is a row here.
+model NotificationLog {
+  id      String @id @default(cuid()) @db.VarChar(64)
+  event   String @db.VarChar(191)
+  channel String @db.VarChar(64)
+
+  recipient String  @db.VarChar(255)
+  subject   String? @db.VarChar(255)
+  status    String  @default("QUEUED") @db.VarChar(64)
+  error     String? @db.Text
+
+  orderId         String? @db.VarChar(64)
+  shipmentId      String? @db.VarChar(64)
+  returnRequestId String? @db.VarChar(64)
+
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([event, createdAt])
+  @@index([orderId])
+  @@index([status])
+}
+
+/// Internal and customer-visible notes on an order, separate from the immutable status history.
+model OrderNote {
+  id      String @id @default(cuid()) @db.VarChar(64)
+  orderId String @db.VarChar(64)
+
+  body              String  @db.Text
+  isCustomerVisible Boolean @default(false)
+  authorType        String  @default("ADMIN") @db.VarChar(64)
+  authorId          String? @db.VarChar(64)
+  authorName        String? @db.VarChar(255)
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+}
+
+// ============================================================================
+// PROMPT 10A - CMS: pages, blocks, banners, FAQ, help centre, testimonials
+// ============================================================================
+
+/// A page is an ordered list of typed blocks. `isSystem` marks the handful the storefront routes
+/// to by hard-coded path (/, /about-us, /privacy-policy): they may be edited, never deleted.
+model Page {
+  id       String  @id @default(cuid()) @db.VarChar(64)
+  slug     String  @unique @db.VarChar(191)
+  title    String  @db.VarChar(255)
+  type     String  @default("STANDARD") @db.VarChar(64)
+  status   String  @default("DRAFT") @db.VarChar(64)
+  template String? @db.VarChar(64)
+
+  excerpt     String? @db.Text
+  heroMediaId String? @db.VarChar(64)
+  ogMediaId   String? @db.VarChar(64)
+
+  seoTitle       String? @db.VarChar(255)
+  seoDescription String? @db.Text
+  seoKeywords    String? @db.Text
+  canonicalUrl   String? @db.VarChar(255)
+  noIndex        Boolean @default(false)
+
+  publishedAt DateTime?
+  scheduledAt DateTime?
+  expiresAt   DateTime?
+
+  authorId       String? @db.VarChar(64)
+  lastEditedById String? @db.VarChar(64)
+
+  isSystem  Boolean @default(false)
+  viewCount Int     @default(0)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  blocks    PageBlock[]
+  revisions PageRevision[]
+
+  @@index([status, publishedAt])
+  @@index([type])
+}
+
+model PageBlock {
+  id               String  @id @default(cuid()) @db.VarChar(64)
+  pageId           String  @db.VarChar(64)
+  type             String  @db.VarChar(64)
+  position         Int     @default(0)
+  isActive         Boolean @default(true)
+  deviceVisibility String  @default("ALL") @db.VarChar(64)
+
+  /// Validated against blockRegistry[type].configSchema. Sanitised where the type carries markup.
+  configJson    String  @db.LongText
+  /// What the admin actually typed, before sanitising. CUSTOM_HTML and RICH_TEXT only.
+  rawConfigJson String? @db.LongText
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  anchorId String? @db.VarChar(64)
+  cssClass String? @db.VarChar(255)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, position])
+}
+
+/// Every publish snapshots the page. Restoring writes a NEW revision rather than rewinding, so the
+/// history is append-only and "what did this look like in March" stays answerable.
+model PageRevision {
+  id           String   @id @default(cuid()) @db.VarChar(64)
+  pageId       String   @db.VarChar(64)
+  version      Int
+  snapshotJson String   @db.LongText
+  editedById   String?  @db.VarChar(64)
+  editedByName String?  @db.VarChar(255)
+  note         String?  @db.VarChar(1000)
+  createdAt    DateTime @default(now())
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, version])
+  @@index([pageId, createdAt])
+}
+
+model Banner {
+  id        String @id @default(cuid()) @db.VarChar(64)
+  name      String @db.VarChar(255)
+  placement String @db.VarChar(191)
+
+  mediaId       String? @db.VarChar(64)
+  mobileMediaId String? @db.VarChar(64)
+  altText       String? @db.VarChar(1000)
+
+  headline    String? @db.VarChar(255)
+  subheadline String? @db.VarChar(500)
+  ctaLabel    String? @db.VarChar(255)
+  ctaUrl      String? @db.VarChar(255)
+  ctaStyle    String? @db.VarChar(64)
+
+  backgroundHex String? @db.VarChar(16)
+  textHex       String? @db.VarChar(16)
+
+  position         Int     @default(0)
+  isActive         Boolean @default(true)
+  deviceVisibility String  @default("ALL") @db.VarChar(64)
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  targetCategoryIdsJson   String? @db.LongText
+  targetCollectionIdsJson String? @db.LongText
+
+  impressionCount Int @default(0)
+  clickCount      Int @default(0)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([placement, isActive, position])
+}
+
+model FaqCategory {
+  id          String  @id @default(cuid()) @db.VarChar(64)
+  name        String  @db.VarChar(255)
+  slug        String  @unique @db.VarChar(191)
+  description String? @db.Text
+  iconMediaId String? @db.VarChar(64)
+  position    Int     @default(0)
+  isActive    Boolean @default(true)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  faqs Faq[]
+}
+
+model Faq {
+  id            String  @id @default(cuid()) @db.VarChar(64)
+  faqCategoryId String? @db.VarChar(64)
+  question      String  @db.VarChar(1000)
+  answer        String  @db.Text
+  visibility    String  @default("GLOBAL") @db.VarChar(191)
+  position      Int     @default(0)
+  isActive      Boolean @default(true)
+
+  targetProductIdsJson  String? @db.LongText
+  targetCategoryIdsJson String? @db.LongText
+
+  helpfulYes Int @default(0)
+  helpfulNo  Int @default(0)
+  viewCount  Int @default(0)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  category FaqCategory? @relation(fields: [faqCategoryId], references: [id])
+
+  @@index([visibility, isActive, position])
+  @@index([faqCategoryId, position])
+}
+
+model HelpCategory {
+  id          String  @id @default(cuid()) @db.VarChar(64)
+  name        String  @db.VarChar(255)
+  slug        String  @unique @db.VarChar(191)
+  description String? @db.Text
+  iconMediaId String? @db.VarChar(64)
+  position    Int     @default(0)
+  isActive    Boolean @default(true)
+
+  parentId String? @db.VarChar(64)
+  path     String  @db.VarChar(255)
+  depth    Int     @default(0)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  parent   HelpCategory?  @relation("HelpTree", fields: [parentId], references: [id])
+  children HelpCategory[] @relation("HelpTree")
+  articles HelpArticle[]
+
+  @@index([parentId, position])
+  @@index([path])
+}
+
+model HelpArticle {
+  id             String  @id @default(cuid()) @db.VarChar(64)
+  helpCategoryId String  @db.VarChar(64)
+  slug           String  @unique @db.VarChar(191)
+  title          String  @db.VarChar(255)
+  excerpt        String? @db.Text
+  bodyMarkdown   String  @db.Text
+  /// Rendered and sanitised at WRITE time. Read paths never run a parser.
+  bodyHtml       String  @db.Text
+
+  status   String @default("DRAFT") @db.VarChar(64)
+  position Int    @default(0)
+
+  viewCount  Int @default(0)
+  helpfulYes Int @default(0)
+  helpfulNo  Int @default(0)
+
+  relatedArticleIdsJson String?   @db.LongText
+  seoTitle              String?   @db.VarChar(255)
+  seoDescription        String?   @db.Text
+  publishedAt           DateTime?
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  category HelpCategory @relation(fields: [helpCategoryId], references: [id])
+
+  @@index([helpCategoryId, position])
+  @@index([status, publishedAt])
+}
+
+model Testimonial {
+  id             String  @id @default(cuid()) @db.VarChar(64)
+  authorName     String  @db.VarChar(255)
+  authorLocation String? @db.VarChar(255)
+  authorRole     String? @db.VarChar(64)
+  avatarMediaId  String? @db.VarChar(64)
+
+  quote        String  @db.Text
+  /// Basis points, like every other rate in this schema: 45000 = 4.5 stars.
+  ratingBp     Int?
+  productId    String? @db.VarChar(64)
+  mediaIdsJson String? @db.LongText
+
+  isFeatured Boolean   @default(false)
+  position   Int       @default(0)
+  isActive   Boolean   @default(true)
+  capturedAt DateTime?
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([isFeatured, isActive, position])
+}
+
+model StoreLocation {
+  id           String  @id @default(cuid()) @db.VarChar(64)
+  name         String  @db.VarChar(255)
+  slug         String  @unique @db.VarChar(191)
+  addressLine1 String  @db.VarChar(1000)
+  addressLine2 String? @db.VarChar(1000)
+  city         String  @db.VarChar(120)
+  state        String  @db.VarChar(64)
+  stateCode    String  @db.VarChar(64)
+  pincode      String  @db.VarChar(16)
+
+  phone     String? @db.VarChar(191)
+  email     String? @db.VarChar(191)
+  mapsUrl   String? @db.VarChar(255)
+  latitude  Float?
+  longitude Float?
+
+  openingHoursJson String? @db.LongText
+  mediaIdsJson     String? @db.LongText
+
+  isActive   Boolean @default(true)
+  position   Int     @default(0)
+  isFlagship Boolean @default(false)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([isActive, position])
+}
+
+model AnnouncementBar {
+  id            String  @id @default(cuid()) @db.VarChar(64)
+  message       String  @db.VarChar(1000)
+  linkUrl       String? @db.VarChar(255)
+  linkLabel     String? @db.VarChar(255)
+  backgroundHex String? @db.VarChar(16)
+  textHex       String? @db.VarChar(16)
+  isDismissible Boolean @default(true)
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  isActive         Boolean @default(true)
+  position         Int     @default(0)
+  deviceVisibility String  @default("ALL") @db.VarChar(64)
+
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([isActive, position])
+}
+
+/// Daily view rollup. A row per hit would be the single fastest-growing table in the database for
+/// information nobody reads at that resolution.
+model ContentView {
+  id         String @id @default(cuid()) @db.VarChar(64)
+  entityType String @db.VarChar(191)
+  entityId   String @db.VarChar(191)
+  dayKey     String @db.VarChar(191)
+  viewCount  Int    @default(0)
+
+  @@unique([entityType, entityId, dayKey])
+  @@index([entityType, dayKey])
+}
+
+// RESERVED FOR LATER — no tables here yet.
+// Prompt 11 adds CustomizationTemplate/Step/Choice and PriceAdjustment.customizationChoiceId.

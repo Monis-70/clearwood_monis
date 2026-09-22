@@ -1,0 +1,50 @@
+{
+  "name": "clearwood",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ClearWood Furnitures — premium Indian furniture e-commerce platform (monorepo)",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "backend",
+    "frontend/web",
+    "frontend/admin",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web,admin -c blue,green,magenta \"npm:dev:backend\" \"npm:dev:web\" \"npm:dev:admin\"",
+    "dev:backend": "npm run dev --workspace backend",
+    "dev:web": "npm run dev --workspace frontend/web",
+    "dev:admin": "npm run dev --workspace frontend/admin",
+    "build": "npm run build --workspace shared && npm run build --workspace backend && npm run build --workspace frontend/web && npm run build --workspace frontend/admin",
+    "test": "npm run test --workspace shared && npm run test --workspace backend",
+    "typecheck": "npm run typecheck --workspace shared && npm run typecheck --workspace backend && npm run typecheck --workspace frontend/web && npm run typecheck --workspace frontend/admin",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:secrets:staged": "node scripts/check-secrets.mjs --staged",
+    "check:stock": "node scripts/check-stock-writes.mjs",
+    "check:seed-dates": "node scripts/check-seed-dates.mjs",
+    "check:production": "npm run check:production --workspace backend",
+    "preflight": "npm run preflight --workspace backend",
+    "check": "npm run check:secrets && npm run check:stock && npm run check:seed-dates",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:migrate": "npm run db:migrate --workspace backend",
+    "db:studio": "npm run db:studio --workspace backend",
+    "db:seed": "npm run db:seed --workspace backend",
+    "db:reset": "npm run db:reset --workspace backend"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "concurrently": "^9.1.0",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+coverage
+.vite
+*.db
+*.db-journal
+package-lock.json
+backend/prisma/migrations
+backend/storage/uploads

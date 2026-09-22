@@ -1,0 +1,82 @@
+### ClearWood Furnitures — Prompt 2 (Catalog domain) endpoint checks
+### VS Code REST Client (humao.rest-client). Start the API first: npm run dev:backend
+### The catalog must be migrated and seeded: npm run db:migrate && npm run db:seed
+
+@baseUrl = http://localhost:7180
+@apiPrefix = /api/v1
+
+### 1. Whole category tree — 12 roots, 111 categories, nested and ordered (cached 5m)
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/tree
+Accept: application/json
+
+### 2. Top level only
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/tree?depth=1
+Accept: application/json
+
+### 3. Include inactive categories (admin view)
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/tree?depth=2&includeInactive=true
+Accept: application/json
+
+### 4. One category: breadcrumbs from the materialised path + children + INHERITED attributes
+###    "fabric-sofas" defines no attributes of its own — everything comes from "sofas".
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/fabric-sofas
+Accept: application/json
+
+### 5. A child that OVERRIDES an inherited attribute (FABRIC becomes required here)
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/leather-sofas
+Accept: application/json
+
+### 6. A top-level category with children
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/mattresses
+Accept: application/json
+
+### 7. Unknown category -> 404 error envelope with a traceId (R3)
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/not-a-real-category
+Accept: application/json
+
+### 8. Malformed slug -> 422 with per-issue details (R2)
+GET {{baseUrl}}{{apiPrefix}}/catalog/categories/NOT_A_SLUG
+Accept: application/json
+
+### 9. Global attribute dictionary, paginated (R5 meta block)
+GET {{baseUrl}}{{apiPrefix}}/catalog/attributes?page=1&limit=5
+Accept: application/json
+
+### 10. Attributes resolved for a category (inherited set)
+GET {{baseUrl}}{{apiPrefix}}/catalog/attributes?categorySlug=fabric-sofas
+Accept: application/json
+
+### 11. Only the attributes a shopper can filter on
+GET {{baseUrl}}{{apiPrefix}}/catalog/attributes?categorySlug=mattresses&filterableOnly=true
+Accept: application/json
+
+### 12. Sorting is allowlisted — an unknown field is rejected with 422 (R10)
+GET {{baseUrl}}{{apiPrefix}}/catalog/attributes?sort=dropTable&order=asc
+Accept: application/json
+
+### 13. The whole mega-menu, from the database (R9 — nothing hardcoded in React)
+GET {{baseUrl}}{{apiPrefix}}/navigation/MAIN
+Accept: application/json
+
+### 14. Footer menus and the top bar
+GET {{baseUrl}}{{apiPrefix}}/navigation/FOOTER_PRIMARY
+Accept: application/json
+
+###
+GET {{baseUrl}}{{apiPrefix}}/navigation/FOOTER_SECONDARY
+Accept: application/json
+
+###
+GET {{baseUrl}}{{apiPrefix}}/navigation/TOP_BAR
+Accept: application/json
+
+### 15. Unknown menu key -> 422 (the key is a validated enum)
+GET {{baseUrl}}{{apiPrefix}}/navigation/NOPE
+Accept: application/json
+
+### 16. A seeded placeholder asset served by the local StorageDriver
+GET {{baseUrl}}/media/seed/kabir-3-seater-fabric-sofa-01.svg
+
+### 17. The generated spec now carries the catalog schemas
+GET {{baseUrl}}/openapi.json
+Accept: application/json

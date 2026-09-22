@@ -1,0 +1,211 @@
+### ClearWood Furnitures — Prompt 8: cart, wishlist, addresses and recently-viewed
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+###
+### The story: a guest configures two sofas, applies a coupon, checks delivery, saves one for
+### later, then logs in — and their guest cart merges into the account cart with a clear report
+### while the totals still match /pricing/quote to the paise.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+@email = aarav.mehta@example.com
+@password = CustomerDemo@2026
+
+### ------------------------------------------------------- as a guest
+
+### 1. An empty cart. Note: this sets NO cookie — a read must never mint a guest identity.
+# @name emptyCart
+GET {{api}}/cart
+
+### 2. Find the sofa we are going to configure, and its variants.
+# @name sofa
+GET {{api}}/catalog/products/kabir-3-seater-fabric-sofa
+
+@productId = {{sofa.response.body.data.id}}
+@beigeCotton = {{sofa.response.body.data.variants.0.id}}
+@beigeVelvet = {{sofa.response.body.data.variants.1.id}}
+
+### 3. Add the Beige / Cotton sofa. THIS is the request that mints the httpOnly `cw_cart` cookie.
+# @name firstAdd
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{beigeCotton}}", "qty": 1 }
+
+@lineId = {{firstAdd.response.body.data.lines.0.id}}
+
+### 4. Add the Beige / Velvet sofa — a DIFFERENT lineKey, so a second line.
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{beigeVelvet}}", "qty": 1 }
+
+### 5. Add Beige / Cotton again — the SAME lineKey, so qty becomes 2 rather than a third line.
+POST {{api}}/cart/items
+Content-Type: application/json
+
+{ "productId": "{{productId}}", "variantId": "{{beigeCotton}}", "qty": 1 }
+
+### 6. Read it back: two lines, a full PriceBreakdown, issues and priceChanges.
+# @name guestCart
+GET {{api}}/cart
+
+### 7. Delivery promise for Mumbai. City, zone and ETA all come from the Prompt 6 shipping tables.
+PUT {{api}}/cart/pincode
+Content-Type: application/json
+
+{ "pincode": "400001" }
+
+### 8. Apply the seeded welcome coupon.
+POST {{api}}/cart/coupon
+Content-Type: application/json
+
+{ "code": "WELCOME10" }
+
+### 9. PROOF OF PRICING AUTHORITY — this quote must match the cart's breakdown component by
+### component: subtotal, discount, shipping, tax, rounding and grand total.
+POST {{api}}/pricing/quote
+Content-Type: application/json
+
+{
+  "items": [
+    { "productId": "{{productId}}", "variantId": "{{beigeCotton}}", "qty": 2 },
+    { "productId": "{{productId}}", "variantId": "{{beigeVelvet}}", "qty": 1 }
+  ],
+  "couponCode": "WELCOME10",
+  "pincode": "400001",
+  "channel": "WEB"
+}
+
+### 10. Save a line for later — it leaves the total immediately.
+POST {{api}}/cart/items/{{lineId}}/save-for-later
+
+### 11. And bring it back.
+POST {{api}}/cart/items/{{lineId}}/move-to-cart
+
+### 12. Move it to the wishlist instead.
+POST {{api}}/cart/items/{{lineId}}/move-to-wishlist
+Content-Type: application/json
+
+{}
+
+### 13. A tiny payload for the header badge.
+GET {{api}}/cart/summary
+
+### --------------------------------------------------- validation
+
+### 14. Validate the deliberately broken seeded cart's shape of problems: OUT_OF_STOCK and
+### MAX_QTY_EXCEEDED arrive as coded, human-readable issues.
+POST {{api}}/cart/validate
+
+### 15. Same call with autoFix — quantities are clamped and the fixes are reported, never silent.
+POST {{api}}/cart/validate?autoFix=true
+
+### ------------------------------------------------------ logging in
+
+### 16. Log in. The guest cart merges into the account cart INSIDE this request — there is no
+### second auth path and no separate merge call in the happy path.
+# @name login
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "identifier": "{{email}}", "password": "{{password}}" }
+
+### 17. The merged cart. The guest lines are now on the customer cart; quantities were summed.
+GET {{api}}/cart
+
+### 18. The explicit merge endpoint, for clients that need the report itself. Idempotent: run it
+### twice and the second call answers `merged: false` without touching a thing.
+POST {{api}}/cart/merge
+Content-Type: application/json
+
+{ "strategy": "SUM_QUANTITIES" }
+
+### ------------------------------------------------------- addresses
+
+### 19. Pincode autofill + serviceability in one call — the form and the cart cannot disagree.
+GET {{api}}/addresses/pincode/400001
+
+### 20. A pincode no seeded zone covers.
+GET {{api}}/addresses/pincode/682555
+
+### 21. The seeded address book.
+GET {{api}}/me/addresses
+
+### 22. Add an address, letting the pincode fill in the city and state.
+# @name newAddress
+POST {{api}}/me/addresses
+Content-Type: application/json
+
+{
+  "label": "Weekend house",
+  "type": "OTHER",
+  "usage": "SHIPPING",
+  "fullName": "Aarav Mehta",
+  "phone": "919810000001",
+  "line1": "7 Hill Road, Lonavala",
+  "city": "Pune",
+  "state": "Maharashtra",
+  "stateCode": "MH",
+  "pincode": "411001"
+}
+
+@addressId = {{newAddress.response.body.data.id}}
+
+### 23. Make it the default. Exactly one default per usage survives.
+POST {{api}}/me/addresses/{{addressId}}/default?usage=SHIPPING
+
+### 24. Soft delete — the row survives so Prompt 9's orders can still point at it.
+DELETE {{api}}/me/addresses/{{addressId}}
+
+### -------------------------------------------------------- wishlists
+
+### 25. Lists, with live prices and price-drop flags.
+# @name lists
+GET {{api}}/wishlists
+
+@listId = {{lists.response.body.data.0.id}}
+
+### 26. Share it.
+# @name shared
+POST {{api}}/wishlists/{{listId}}/share
+
+### 27. Open the share link as a stranger — no session, and no customer identity in the payload.
+GET {{api}}/wishlists/shared/{{shared.response.body.data.shareToken}}
+
+### 28. Stop sharing. The token 404s immediately afterwards.
+DELETE {{api}}/wishlists/{{listId}}/share
+
+### -------------------------------------------------- recently viewed
+
+### 29. What this shopper has been looking at.
+GET {{api}}/me/recently-viewed?limit=12
+
+### 30. Clear it.
+DELETE {{api}}/me/recently-viewed
+
+### ------------------------------------------------------------ admin
+
+### 31. Admin login (ORDER_MANAGER or above; `order.customer.read` is the gate).
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{ "email": "admin@clearwood.local", "password": "ChangeMe@2026" }
+
+### 32. Live and abandoned carts.
+GET {{api}}/admin/carts?limit=20
+
+### 33. Abandoned only — the recovery list.
+GET {{api}}/admin/carts?status=ABANDONED
+
+### 34. Lifecycle totals, abandonment rate and the most-abandoned products.
+GET {{api}}/admin/carts/stats
+
+### 35. Most-wishlisted products and the price-drop watch list.
+GET {{api}}/admin/wishlists/stats
+
+### 36. The cleanup sweep: ACTIVE -> ABANDONED -> EXPIRED. It never deletes a shopper's lines.
+POST {{api}}/admin/carts/cleanup
+Content-Type: application/json
+
+{}

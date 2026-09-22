@@ -1,0 +1,69 @@
+### ClearWood Furnitures — Prompt 1 (Foundation) endpoint checks
+### Open in VS Code with the "REST Client" extension (humao.rest-client) and click "Send Request".
+### Start the API first:  npm run dev:backend
+
+@baseUrl = http://localhost:7180
+@apiPrefix = /api/v1
+@webOrigin = http://localhost:7181
+@adminOrigin = http://localhost:7182
+
+### 1. Liveness — 200, touches no dependency
+GET {{baseUrl}}/health
+Accept: application/json
+
+### 2. Readiness — 200 when sqlite + memory cache answer, otherwise 503 with per-dependency detail
+GET {{baseUrl}}/ready
+Accept: application/json
+
+### 3. Build info + the driver each dependency is bound to
+GET {{baseUrl}}{{apiPrefix}}/version
+Accept: application/json
+
+### 4. Public settings — flat, typed key/value map (seeded, admin-editable)
+GET {{baseUrl}}{{apiPrefix}}/settings/public
+Accept: application/json
+
+### 5. Public settings filtered by group
+GET {{baseUrl}}{{apiPrefix}}/settings/public?group=site
+Accept: application/json
+
+### 6. Invalid query -> 422 with per-issue details (R2)
+GET {{baseUrl}}{{apiPrefix}}/settings/public?group=NOT%20VALID
+Accept: application/json
+
+### 7. Unknown route -> 404 error envelope with a traceId (R3)
+GET {{baseUrl}}{{apiPrefix}}/does-not-exist
+Accept: application/json
+
+### 8. Malformed JSON body -> 400 INVALID_JSON
+POST {{baseUrl}}{{apiPrefix}}/version
+Content-Type: application/json
+
+{"broken":
+
+### 9. A caller-supplied correlation id is echoed back as the traceId
+GET {{baseUrl}}{{apiPrefix}}/does-not-exist
+Accept: application/json
+x-request-id: manual-trace-id-0001
+
+### 10. CORS preflight from the storefront origin -> allowed
+OPTIONS {{baseUrl}}{{apiPrefix}}/settings/public
+Origin: {{webOrigin}}
+Access-Control-Request-Method: GET
+Access-Control-Request-Headers: content-type,x-request-id
+
+### 11. CORS preflight from the admin origin -> allowed
+OPTIONS {{baseUrl}}{{apiPrefix}}/settings/public
+Origin: {{adminOrigin}}
+Access-Control-Request-Method: GET
+
+### 12. CORS from an origin outside the allowlist -> 403 CORS_ORIGIN_NOT_ALLOWED (R10)
+GET {{baseUrl}}{{apiPrefix}}/settings/public
+Origin: http://evil.example.com
+
+### 13. Generated OpenAPI document (R7)
+GET {{baseUrl}}/openapi.json
+Accept: application/json
+
+### 14. Swagger UI (open in a browser): http://localhost:7180/docs
+GET {{baseUrl}}/docs/

@@ -1,0 +1,220 @@
+### ClearWood Furnitures — Prompt 3 (Auth, RBAC, sessions, audit)
+### VS Code REST Client (humao.rest-client). Start the API first: npm run dev:backend
+### Run top to bottom — later requests reuse values captured from earlier ones.
+###
+### COOKIES: REST Client keeps its own cookie jar, so cw_adm_* / cw_cus_* are sent automatically.
+### The refresh token is ONLY ever in the httpOnly cookie — it is never in a response body.
+### Authenticated calls below use `Authorization: Bearer` because Bearer requests are CSRF-exempt;
+### the production frontends use the cookies plus an X-CSRF-Token header instead.
+
+@baseUrl = http://localhost:7180
+@api = {{baseUrl}}/api/v1
+@adminEmail = admin@clearwood.local
+@adminPassword = ChangeMe@12345
+
+### ---------------------------------------------------------------- ADMIN ---
+
+### 1. Sign in as the seeded SUPER_ADMIN (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{adminEmail}}",
+  "password": "{{adminPassword}}"
+}
+
+###
+@adminToken = {{adminLogin.response.body.$.data.tokens.accessToken}}
+
+### 2. Who am I — roles + the full effective permission list (86 for SUPER_ADMIN)
+GET {{api}}/admin/auth/me
+Authorization: Bearer {{adminToken}}
+
+### 3. GUARD CHAIN PROOF — authenticate(ADMIN) + requirePermission(catalog.category.read)
+GET {{api}}/admin/catalog/categories?depth=1
+Authorization: Bearer {{adminToken}}
+
+### 4. Anonymous -> 401 NOT_AUTHENTICATED
+GET {{api}}/admin/catalog/categories
+
+### 5. The permission registry, grouped for the UI
+GET {{api}}/admin/permissions
+Authorization: Bearer {{adminToken}}
+
+### 6. Roles and their permission counts
+GET {{api}}/admin/roles
+Authorization: Bearer {{adminToken}}
+
+### 7. Active sessions for this admin
+GET {{api}}/admin/auth/sessions
+Authorization: Bearer {{adminToken}}
+
+### 8. Audit trail (system.audit.read)
+GET {{api}}/admin/audit-logs?action=LOGIN&limit=5
+Authorization: Bearer {{adminToken}}
+
+### ------------------------------------------------------- 403 / RBAC PROOF ---
+
+### 9. Create a CATALOG_MANAGER (system.user.create). Re-running returns 409 — that is fine.
+POST {{api}}/admin/users
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "email": "catalog.manager@clearwood.local",
+  "name": "Catalog Manager",
+  "password": "Sheesham-Teak-2026",
+  "roleCodes": ["CATALOG_MANAGER"]
+}
+
+### 10. Sign in as that manager
+# @name managerLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "catalog.manager@clearwood.local",
+  "password": "Sheesham-Teak-2026"
+}
+
+###
+@managerToken = {{managerLogin.response.body.$.data.tokens.accessToken}}
+
+### 11. Allowed: the manager holds catalog.category.read (36 permissions in total)
+GET {{api}}/admin/catalog/categories?depth=1
+Authorization: Bearer {{managerToken}}
+
+### 12. DENIED -> 403 FORBIDDEN + an audited PERMISSION_DENIED row (needs system.role.create)
+POST {{api}}/admin/roles
+Authorization: Bearer {{managerToken}}
+Content-Type: application/json
+
+{
+  "code": "SHOULD_NOT_EXIST",
+  "name": "Should not exist",
+  "permissions": []
+}
+
+### 13. The denial is in the trail
+GET {{api}}/admin/audit-logs?action=PERMISSION_DENIED&limit=5
+Authorization: Bearer {{adminToken}}
+
+### --------------------------------------------------------- ADMIN SESSION ---
+
+### 14. Rotate using the httpOnly cookie (no body token needed, none is returned)
+POST {{api}}/admin/auth/refresh
+Content-Type: application/json
+
+{}
+
+### 15. Replaying an already-rotated cookie would return 401 TOKEN_REUSE and kill the family.
+###     REST Client always sends the newest cookie, so reuse is exercised by the test suite
+###     (backend/tests/auth-admin.test.ts -> "refuses a replayed cookie").
+
+### 16. Identical response whether or not the address exists (no account enumeration)
+POST {{api}}/admin/auth/forgot-password
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}" }
+
+###
+POST {{api}}/admin/auth/forgot-password
+Content-Type: application/json
+
+{ "email": "definitely-not-a-user@clearwood.local" }
+
+### 17. Wrong password -> the same message as an unknown account
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "wrong-password-here" }
+
+### 18. Sign out (Bearer is CSRF-exempt; the browser sends X-CSRF-Token instead)
+POST {{api}}/admin/auth/logout
+Authorization: Bearer {{adminToken}}
+
+### ------------------------------------------------------------- CUSTOMER ---
+
+### 19. Request an OTP. `devCode` is returned only because NODE_ENV !== production.
+# @name otpRequest
+POST {{api}}/auth/otp/request
+Content-Type: application/json
+
+{
+  "phone": "919820000777",
+  "purpose": "LOGIN"
+}
+
+###
+@otpCode = {{otpRequest.response.body.$.data.devCode}}
+
+### 20. Verify it — signs in, or creates the account when the number is new
+# @name otpVerify
+POST {{api}}/auth/otp/verify
+Content-Type: application/json
+
+{
+  "destination": "919820000777",
+  "code": "{{otpCode}}",
+  "purpose": "LOGIN",
+  "name": "OTP Shopper"
+}
+
+###
+@customerToken = {{otpVerify.response.body.$.data.tokens.accessToken}}
+
+### 21. The signed-in customer
+GET {{api}}/auth/me
+Authorization: Bearer {{customerToken}}
+
+### 22. REALM ISOLATION — an admin token is not valid on a storefront route (401 TOKEN_INVALID)
+GET {{api}}/auth/me
+Authorization: Bearer {{adminToken}}
+
+### 23. …and a customer token is not valid on an admin route (401 TOKEN_INVALID)
+GET {{api}}/admin/catalog/categories
+Authorization: Bearer {{customerToken}}
+
+### 24. Password login for the seeded demo customer
+# @name customerLogin
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{
+  "identifier": "aarav.mehta@example.com",
+  "password": "CustomerDemo@2026"
+}
+
+### 25. Rotate the storefront session over its cookie
+POST {{api}}/auth/refresh
+Content-Type: application/json
+
+{}
+
+### 26. Update the profile (cookie-authenticated PATCH would need X-CSRF-Token; Bearer is exempt)
+PATCH {{api}}/auth/me
+Authorization: Bearer {{customerToken}}
+Content-Type: application/json
+
+{ "marketingOptIn": true }
+
+### 27. A blocked customer cannot even request a code (403 ACCOUNT_DISABLED)
+POST {{api}}/auth/otp/request
+Content-Type: application/json
+
+{ "phone": "919810000003", "purpose": "LOGIN" }
+
+### 28. Resend before the cooldown -> 429 OTP_RESEND_TOO_SOON
+POST {{api}}/auth/otp/request
+Content-Type: application/json
+
+{ "phone": "919820000777", "purpose": "LOGIN" }
+
+### 29. Sign out
+POST {{api}}/auth/logout
+Authorization: Bearer {{customerToken}}
+
+### 30. The generated spec now carries every auth schema
+GET {{baseUrl}}/openapi.json
+Accept: application/json

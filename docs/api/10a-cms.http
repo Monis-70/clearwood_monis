@@ -1,0 +1,285 @@
+### ClearWood — Prompt 10A CMS verification
+### Run top to bottom. Public reads first, then the admin walkthrough.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+@admin = {{api}}/admin
+@adminEmail = admin@clearwood.local
+@adminPassword = ClearWood@2026
+
+################################################################################
+# PUBLIC
+################################################################################
+
+### The hydrated home page. Every block arrives render-ready.
+GET {{api}}/content/home
+Accept: application/json
+
+### The same, as a phone. MOBILE_ONLY blocks appear, DESKTOP_ONLY ones do not.
+GET {{api}}/content/home?device=MOBILE
+Accept: application/json
+
+### Repeat with the ETag from the response above to get a 304.
+GET {{api}}/content/home
+If-None-Match: W/"REPLACE_WITH_ETAG_FROM_ABOVE"
+
+### A policy page. The body is RICH_TEXT, sanitised when it was saved.
+GET {{api}}/content/pages/privacy-policy
+
+### A draft or scheduled-for-later page is 404, never 403.
+GET {{api}}/content/pages/not-a-real-page
+
+### Banners for the hero placement.
+GET {{api}}/content/banners?placement=HOME_HERO&device=DESKTOP
+
+### The announcement bar showing right now, or null.
+GET {{api}}/content/announcement
+
+### FAQs for a product. Untargeted FAQs apply everywhere; targeted ones only here.
+GET {{api}}/content/faqs?productSlug=goli-pouffe
+
+### FAQs by visibility.
+GET {{api}}/content/faqs?visibility=SHIPPING
+
+### Full-text FAQ search.
+GET {{api}}/content/faqs?q=monsoon
+
+### FAQ categories.
+GET {{api}}/content/faq-categories
+
+### Help centre: the tree plus featured articles.
+GET {{api}}/content/help
+
+### One help category.
+GET {{api}}/content/help/help-delivery
+
+### One help article. bodyHtml was rendered and sanitised at WRITE time.
+GET {{api}}/content/help/articles/what-to-check-on-arrival
+
+### Testimonials and showrooms.
+GET {{api}}/content/testimonials?featured=true
+
+###
+GET {{api}}/content/stores
+
+### Root-mounted for crawlers, outside /api and outside the rate limiter.
+GET {{host}}/sitemap.xml
+
+###
+GET {{host}}/sitemap-pages.xml
+
+###
+GET {{host}}/sitemap-products.xml
+
+###
+GET {{host}}/robots.txt
+
+################################################################################
+# ADMIN — sign in first
+################################################################################
+
+### @name login
+POST {{admin}}/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "{{adminPassword}}" }
+
+@csrf = {{login.response.headers.set-cookie}}
+
+### The block registry. Prompt 15's builder is generated from this, not hardcoded.
+GET {{admin}}/cms/block-types
+
+################################################################################
+# ADMIN WALKTHROUGH — build a landing page, publish it, rename it, restore it
+################################################################################
+
+### 1. Create a landing page. It starts as DRAFT.
+# @name landing
+POST {{admin}}/cms/pages
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "slug": "monsoon-sale",
+  "title": "Monsoon Sale",
+  "type": "LANDING",
+  "seoTitle": "Monsoon Sale | ClearWood Furnitures",
+  "seoDescription": "Solid wood furniture, built to order, with monsoon pricing."
+}
+
+@pageId = {{landing.response.body.data.id}}
+
+### 2. Publishing now must FAIL with every blocker at once (NO_BLOCKS).
+POST {{admin}}/cms/pages/{{pageId}}/publish
+X-CSRF-Token: {{csrf}}
+
+### 3. Add a hero. Replace mediaId with a real one from GET {{admin}}/media.
+POST {{admin}}/cms/pages/{{pageId}}/blocks
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "type": "HERO_SLIDER",
+  "config": {
+    "slides": [
+      {
+        "mediaId": "REPLACE_WITH_A_REAL_MEDIA_ID",
+        "headline": "Monsoon Sale",
+        "subheadline": "Built to order, delivered dry.",
+        "ctaLabel": "Shop sofas",
+        "ctaUrl": "/sofas"
+      }
+    ]
+  }
+}
+
+### 4. Add a product grid drawn from a collection.
+POST {{admin}}/cms/pages/{{pageId}}/blocks
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "type": "PRODUCT_GRID",
+  "config": { "title": "Best sellers", "collectionId": "REPLACE_WITH_COLLECTION_ID", "limit": 8 }
+}
+
+### 5. Add rich text. The script tag will be stripped and the original kept in rawConfig.
+POST {{admin}}/cms/pages/{{pageId}}/blocks
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "type": "RICH_TEXT",
+  "config": {
+    "html": "<h2>Terms</h2><p>Offer ends 30 September.</p><script>alert(1)</script>"
+  }
+}
+
+### 6. Reorder them. Take the block ids from the responses above.
+POST {{admin}}/cms/pages/{{pageId}}/blocks/reorder
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "order": [
+    { "id": "BLOCK_ID_HERO", "position": 0 },
+    { "id": "BLOCK_ID_RICH_TEXT", "position": 1 },
+    { "id": "BLOCK_ID_PRODUCT_GRID", "position": 2 }
+  ]
+}
+
+### 7. Preview. Renders the draft; requires the permission.
+POST {{admin}}/cms/pages/{{pageId}}/preview
+X-CSRF-Token: {{csrf}}
+
+### 8. Publish. Now it passes the gate.
+POST {{admin}}/cms/pages/{{pageId}}/publish
+X-CSRF-Token: {{csrf}}
+
+### 9. It is live.
+GET {{api}}/content/pages/monsoon-sale
+
+### 10. Rename it. A SlugRedirect is written.
+PATCH {{admin}}/cms/pages/{{pageId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "slug": "monsoon-sale-2026", "version": 1 }
+
+### 11. Follow the redirect: type REDIRECT, statusCode 301.
+GET {{api}}/catalog/resolve?path=/monsoon-sale
+
+### 12. The new slug serves directly.
+GET {{api}}/content/pages/monsoon-sale-2026
+
+### 13. Revisions. Publishing wrote one.
+GET {{admin}}/cms/pages/{{pageId}}/revisions
+
+### 14. Restore v1. This writes a NEW revision rather than rewinding history.
+POST {{admin}}/cms/pages/{{pageId}}/revisions/1/restore
+X-CSRF-Token: {{csrf}}
+
+### 15. There are now more revisions than before, not fewer.
+GET {{admin}}/cms/pages/{{pageId}}/revisions
+
+################################################################################
+# ADMIN — navigation
+################################################################################
+
+### Read the MAIN menu.
+GET {{admin}}/navigation/MAIN
+
+### A PAGE item must point at a PUBLISHED page.
+POST {{admin}}/navigation/MAIN/items
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "label": "Monsoon Sale", "type": "PAGE", "pageSlug": "monsoon-sale-2026", "position": 99 }
+
+### A protocol-relative URL is refused: the browser would resolve it off-site.
+POST {{admin}}/navigation/MAIN/items
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "label": "Phishing", "type": "URL", "url": "//evil.example.com" }
+
+### So is javascript:.
+POST {{admin}}/navigation/MAIN/items
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "label": "XSS", "type": "URL", "url": "javascript:alert(1)" }
+
+### Reorder the menu. Take the ids from GET {{admin}}/navigation/MAIN.
+POST {{admin}}/navigation/MAIN/reorder
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "order": [{ "id": "ITEM_ID_1", "position": 0 }, { "id": "ITEM_ID_2", "position": 1 }] }
+
+### The public menu reflects it on the very next call.
+GET {{api}}/navigation/MAIN
+
+################################################################################
+# ADMIN — banners, FAQs, settings, SEO
+################################################################################
+
+### Banners.
+GET {{admin}}/cms/banners
+
+### Impressions and clicks for one.
+GET {{admin}}/cms/banners/REPLACE_WITH_BANNER_ID/stats
+
+### FAQs.
+GET {{admin}}/cms/faqs
+
+### Help articles.
+GET {{admin}}/cms/help/articles
+
+### Content settings.
+GET {{admin}}/content/settings
+
+### Write one. Only whitelisted keys are accepted.
+PUT {{admin}}/content/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "site.contact_phone": "+91 99999 99999" }
+
+### A non-content key is refused, so this screen is not a back door into payments.
+PUT {{admin}}/content/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "payment.razorpay_key_secret": "nope" }
+
+### The meta tags a page will render with.
+GET {{admin}}/seo/preview/PAGE/{{pageId}}
+
+### Rebuild the sitemap cache; returns entry counts per section.
+POST {{admin}}/seo/sitemap/rebuild
+X-CSRF-Token: {{csrf}}
+
+### Clean up.
+DELETE {{admin}}/cms/pages/{{pageId}}
+X-CSRF-Token: {{csrf}}
