@@ -93,6 +93,8 @@ export interface CategoryNode {
   depth: number;
   position: number;
   kind: CategoryKind;
+  /** The enquiry form a SERVICE category opens instead of a product grid; null otherwise. */
+  leadFormKey: string | null;
   parentId: string | null;
   isActive: boolean;
   showInMenu: boolean;

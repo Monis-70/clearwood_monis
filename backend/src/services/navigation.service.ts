@@ -6,7 +6,10 @@ import {
   navigationRepository,
   type NavigationItemRow,
 } from '../repositories/navigation.repository';
+import { isCollectionLive } from '../repositories/storefront.repository';
 import { AppError } from '../utils/AppError';
+
+import { categoryService } from './category.service';
 
 const NAV_CACHE_PREFIX = 'nav:';
 const TTL_SECONDS = 300;
@@ -56,7 +59,8 @@ function nest(rows: NavigationItemRow[]): NavigationNode[] {
     const node = nodes.get(row.id)!;
     const parent = row.parentId ? nodes.get(row.parentId) : undefined;
     if (parent) parent.children.push(node);
-    else roots.push(node);
+    // The parent was hidden: its children go with it rather than surfacing at the top level.
+    else if (row.parentId === null) roots.push(node);
   }
 
   const sort = (list: NavigationNode[]): NavigationNode[] => {
@@ -76,7 +80,21 @@ export const navigationService = {
       if (!menu) throw AppError.notFound(`Navigation menu "${key}" not found`, { key });
 
       const rows = await navigationRepository.findItems(menu.id);
-      return { key: menu.key as NavigationMenuKey, name: menu.name, items: nest(rows) };
+      const liveCategories = await categoryService.liveIds();
+      const now = new Date();
+
+      // A link to a category or collection the shopper cannot open is not shown at all.
+      const visible = rows.filter((row) => {
+        if (row.type === 'CATEGORY') {
+          return row.categoryId !== null && liveCategories.has(row.categoryId);
+        }
+        if (row.type === 'COLLECTION') {
+          return row.collection !== null && isCollectionLive(row.collection, now);
+        }
+        return true;
+      });
+
+      return { key: menu.key as NavigationMenuKey, name: menu.name, items: nest(visible) };
     });
   },
 };

@@ -1,5 +1,8 @@
 import type { StockStatus } from '@shared/enums';
 
+import { combinationKeyOf } from '../../src/modules/catalog-admin/variantOptions';
+import { mark } from '../../src/utils/uniqueMark';
+
 import { DEMO_PRICE_ADJUSTMENTS, DEMO_PRODUCTS, type SeedProduct } from './data/demoProducts';
 import { log, prisma } from './context';
 import { ensureSeedMedia } from './media-assets';
@@ -122,11 +125,16 @@ export async function seedDemoCatalog(): Promise<void> {
 
       await prisma.productCategory.upsert({
         where: { productId_categoryId: { productId: row.id, categoryId } },
-        update: { isPrimary: categoryIndex === 0, position: categoryIndex + 1 },
+        update: {
+          isPrimary: categoryIndex === 0,
+          primaryMark: mark(categoryIndex === 0),
+          position: categoryIndex + 1,
+        },
         create: {
           productId: row.id,
           categoryId,
           isPrimary: categoryIndex === 0,
+          primaryMark: mark(categoryIndex === 0),
           position: categoryIndex + 1,
         },
       });
@@ -168,6 +176,7 @@ export async function seedDemoCatalog(): Promise<void> {
         update: {
           position: variantIndex + 1,
           isDefault: variant.isDefault ?? false,
+          defaultMark: mark(variant.isDefault ?? false),
           isActive: true,
           deletedAt: null,
         },
@@ -178,6 +187,7 @@ export async function seedDemoCatalog(): Promise<void> {
           pricePaise: variant.pricePaise ?? null,
           position: variantIndex + 1,
           isDefault: variant.isDefault ?? false,
+          defaultMark: mark(variant.isDefault ?? false),
           stockStatus: stockStatusFor(product, variant.stockQty ?? 0),
           lowStockThreshold: 2,
           leadTimeDays: variant.leadTimeDays ?? product.leadTimeDays ?? null,
@@ -186,20 +196,25 @@ export async function seedDemoCatalog(): Promise<void> {
       variantIds.set(variant.suffix, variantRow.id);
       variantCount += 1;
 
-      for (const [attributeCode, valueCode] of Object.entries(variant.attributes)) {
+      const options = Object.entries(variant.attributes).map(([attributeCode, valueCode]) => {
         const ref = requireValue(attributeCode, valueCode);
+        return { attributeId: ref.attributeId, attributeValueId: ref.valueId };
+      });
+
+      for (const option of options) {
         await prisma.variantAttributeValue.upsert({
           where: {
-            variantId_attributeId: { variantId: variantRow.id, attributeId: ref.attributeId },
+            variantId_attributeId: { variantId: variantRow.id, attributeId: option.attributeId },
           },
-          update: { attributeValueId: ref.valueId },
-          create: {
-            variantId: variantRow.id,
-            attributeId: ref.attributeId,
-            attributeValueId: ref.valueId,
-          },
+          update: { attributeValueId: option.attributeValueId },
+          create: { variantId: variantRow.id, ...option },
         });
       }
+
+      await prisma.productVariant.update({
+        where: { id: variantRow.id },
+        data: { combinationKey: combinationKeyOf(options) },
+      });
     }
 
     const firstVariant = product.variants[0];
@@ -246,6 +261,7 @@ export async function seedDemoCatalog(): Promise<void> {
 
       const data = {
         role: plan.role,
+        primaryMark: mark(plan.role === 'PRIMARY'),
         position: mediaIndex + 1,
         deviceTarget: plan.deviceTarget,
         attributeValueId: 'attributeValueId' in plan ? plan.attributeValueId : null,

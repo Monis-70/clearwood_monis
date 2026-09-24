@@ -2,6 +2,8 @@ import type { Prisma, ProductMedia } from '@prisma/client';
 
 import { prisma } from '../config/prisma';
 
+type Client = Prisma.TransactionClient | typeof prisma;
+
 const withMedia = {
   media: { include: { variants: { orderBy: [{ width: 'asc' as const }] } } },
 } satisfies Prisma.ProductMediaInclude;
@@ -37,32 +39,41 @@ export const productMediaRepository = {
     mediaId: string,
     attributeValueId: string | null,
     variantId: string | null,
+    client: Client = prisma,
   ): Promise<ProductMedia | null> {
-    return prisma.productMedia.findFirst({
+    return client.productMedia.findFirst({
       where: { productId, mediaId, attributeValueId, variantId },
     });
   },
 
-  create(data: Prisma.ProductMediaUncheckedCreateInput): Promise<ProductMediaWithMedia> {
-    return prisma.productMedia.create({ data, include: withMedia });
+  create(
+    data: Prisma.ProductMediaUncheckedCreateInput,
+    client: Client = prisma,
+  ): Promise<ProductMediaWithMedia> {
+    return client.productMedia.create({ data, include: withMedia });
   },
 
   update(
     id: string,
     data: Prisma.ProductMediaUncheckedUpdateInput,
+    client: Client = prisma,
   ): Promise<ProductMediaWithMedia> {
-    return prisma.productMedia.update({ where: { id }, data, include: withMedia });
+    return client.productMedia.update({ where: { id }, data, include: withMedia });
   },
 
   delete(id: string): Promise<ProductMedia> {
     return prisma.productMedia.delete({ where: { id } });
   },
 
-  /** Exactly one PRIMARY per product — every other row is demoted to GALLERY. */
-  async demoteOtherPrimaries(productId: string, keepId: string): Promise<number> {
-    const result = await prisma.productMedia.updateMany({
-      where: { productId, role: 'PRIMARY', id: { not: keepId } },
-      data: { role: 'GALLERY' },
+  /** At most one PRIMARY per product: the current one becomes GALLERY before another is set. */
+  async demoteOtherPrimaries(
+    productId: string,
+    keepId: string | null,
+    client: Client = prisma,
+  ): Promise<number> {
+    const result = await client.productMedia.updateMany({
+      where: { productId, primaryMark: true, ...(keepId ? { id: { not: keepId } } : {}) },
+      data: { role: 'GALLERY', primaryMark: null },
     });
     return result.count;
   },
@@ -81,5 +92,16 @@ export const productMediaRepository = {
 
   countForProduct(productId: string): Promise<number> {
     return prisma.productMedia.count({ where: { productId } });
+  },
+
+  /** Slugs of the products whose galleries use any of these assets. */
+  async productSlugsForMedia(mediaIds: string[]): Promise<string[]> {
+    if (mediaIds.length === 0) return [];
+
+    const rows = await prisma.product.findMany({
+      where: { media: { some: { mediaId: { in: mediaIds } } } },
+      select: { slug: true },
+    });
+    return rows.map((row) => row.slug);
   },
 };

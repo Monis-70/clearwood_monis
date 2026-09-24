@@ -42,8 +42,27 @@ export interface RefreshContext {
 
 const REFRESH_TOKEN_BYTES = 32;
 
+/**
+ * The one algorithm both realms sign and accept. Pinned on BOTH sides: without `algorithms` on
+ * verify, the library would take the token header's word for how it was signed.
+ */
+const ACCESS_TOKEN_ALGORITHM = 'HS256' as const;
+
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/** A signature can be valid over a payload we never issued; the shape is checked too. */
+function hasAccessTokenShape(claims: JwtPayload | string): claims is AccessTokenClaims {
+  if (typeof claims === 'string') return false;
+  return (
+    typeof claims.sub === 'string' &&
+    claims.sub.length > 0 &&
+    typeof claims.sid === 'string' &&
+    claims.sid.length > 0 &&
+    Number.isInteger(claims.ver) &&
+    (claims.perms === undefined || Array.isArray(claims.perms))
+  );
 }
 
 function ttlToMs(ttl: string): number {
@@ -87,6 +106,7 @@ export const tokenService = {
     }
 
     const signOptions: SignOptions = {
+      algorithm: ACCESS_TOKEN_ALGORITHM,
       subject: principal.id,
       audience: config.audience,
       issuer: config.issuer,
@@ -103,11 +123,12 @@ export const tokenService = {
 
     try {
       const claims = jwt.verify(token, config.accessSecret, {
+        algorithms: [ACCESS_TOKEN_ALGORITHM],
         audience: config.audience,
         issuer: config.issuer,
-      }) as AccessTokenClaims;
+      });
 
-      if (claims.typ !== 'access' || claims.realm !== realm) {
+      if (!hasAccessTokenShape(claims) || claims.typ !== 'access' || claims.realm !== realm) {
         throw new AppError(401, 'TOKEN_INVALID', 'This token is not valid for this realm');
       }
       return claims;
@@ -149,6 +170,11 @@ export const tokenService = {
   /**
    * Rotation with reuse detection: the presented token is marked used and replaced by a sibling in
    * the same family. Presenting an already-used token means it leaked — the whole family dies.
+   *
+   * The "mark used" is an atomic claim, so two concurrent refreshes with the same token cannot
+   * both win: the loser is treated exactly like a replay. A family revoked while the winner was
+   * issuing its child (reuse detected elsewhere, or a logout) is re-checked after the insert, so
+   * no live token can survive a revocation that raced it.
    */
   async rotateRefreshToken(
     realm: AuthRealm,
@@ -162,16 +188,18 @@ export const tokenService = {
       throw new AppError(401, 'TOKEN_INVALID', 'Invalid refresh token');
     }
 
-    if (existing.usedAt) {
+    const reuseDetected = async (): Promise<AppError> => {
       await refreshTokenRepository.revokeFamily(existing.familyId, 'TOKEN_REUSE_DETECTED');
       logger.warn(
         { familyId: existing.familyId, principalId: existing.principalId, realm },
         'refresh token reuse detected — session family revoked',
       );
-      throw new AppError(401, 'TOKEN_REUSE', 'This session has been revoked for your safety', {
+      return new AppError(401, 'TOKEN_REUSE', 'This session has been revoked for your safety', {
         familyId: existing.familyId,
       });
-    }
+    };
+
+    if (existing.usedAt) throw await reuseDetected();
 
     if (existing.revokedAt) {
       throw new AppError(401, 'TOKEN_INVALID', 'This session has been revoked');
@@ -181,7 +209,12 @@ export const tokenService = {
       throw new AppError(401, 'TOKEN_EXPIRED', 'Your session has expired');
     }
 
-    await refreshTokenRepository.markUsed(existing.id);
+    if (!(await refreshTokenRepository.claim(existing.id))) {
+      const current = await refreshTokenRepository.findById(existing.id);
+      // Another request rotated this exact token a moment ago: indistinguishable from a replay.
+      if (current?.usedAt) throw await reuseDetected();
+      throw new AppError(401, 'TOKEN_INVALID', 'This session has been revoked');
+    }
 
     const issued = await this.issueRefreshToken(
       realm,
@@ -194,6 +227,20 @@ export const tokenService = {
       existing.familyId,
       existing.id,
     );
+
+    // A revocation that ran between the claim and the insert could not see the new row.
+    const parent = await refreshTokenRepository.findById(existing.id);
+    if (parent?.revokedAt) {
+      const reason = parent.revokedReason ?? 'REVOKED';
+      await refreshTokenRepository.revokeFamily(existing.familyId, reason);
+
+      if (reason === 'TOKEN_REUSE_DETECTED') {
+        throw new AppError(401, 'TOKEN_REUSE', 'This session has been revoked for your safety', {
+          familyId: existing.familyId,
+        });
+      }
+      throw new AppError(401, 'TOKEN_INVALID', 'This session has been revoked');
+    }
 
     return { issued, principalId: existing.principalId };
   },

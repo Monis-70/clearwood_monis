@@ -3,7 +3,7 @@
     "Legacy debt from Prompts 1-8. This list may only shrink.",
     "Adding an entry is a review failure. Burn-down is scheduled for Prompt 15/16."
   ],
-  "count": 176,
+  "count": 172,
   "routes": [
     "DELETE /api/v1/admin/auth/sessions/{id}",
     "DELETE /api/v1/admin/catalog/attribute-groups/{id}",
@@ -86,7 +86,6 @@
     "PATCH /api/v1/admin/catalog/collections/{id}",
     "PATCH /api/v1/admin/catalog/price-adjustments/{id}",
     "PATCH /api/v1/admin/catalog/products/{id}",
-    "PATCH /api/v1/admin/catalog/products/{id}/variants/{variantId}",
     "PATCH /api/v1/admin/catalog/tax-classes/{id}",
     "PATCH /api/v1/admin/media-folders/{id}",
     "PATCH /api/v1/admin/pricing/coupons/{id}",
@@ -129,10 +128,8 @@
     "POST /api/v1/admin/catalog/products/{id}/duplicate",
     "POST /api/v1/admin/catalog/products/{id}/restore",
     "POST /api/v1/admin/catalog/products/{id}/unpublish",
-    "POST /api/v1/admin/catalog/products/{id}/variants",
     "POST /api/v1/admin/catalog/products/{id}/variants/matrix/generate",
     "POST /api/v1/admin/catalog/products/{id}/variants/reorder",
-    "POST /api/v1/admin/catalog/products/{id}/variants/{variantId}/set-default",
     "POST /api/v1/admin/catalog/tax-classes",
     "POST /api/v1/admin/collections/evaluate-all",
     "POST /api/v1/admin/media-folders",
@@ -178,7 +175,6 @@
     "PUT /api/v1/admin/catalog/collections/{id}/products",
     "PUT /api/v1/admin/catalog/products/{id}/attribute-values",
     "PUT /api/v1/admin/catalog/products/{id}/categories",
-    "PUT /api/v1/admin/catalog/products/{id}/relations",
     "PUT /api/v1/admin/pricing/price-lists/{id}/items",
     "PUT /api/v1/admin/pricing/settings"
   ]

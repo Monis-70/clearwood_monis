@@ -74,7 +74,7 @@ async function establishSession(
   user: AdminUserWithRoles,
   context: AuthRequestContext,
 ): Promise<AdminMeDto & { accessToken: string; sessionId: string }> {
-  const resolved = await rbacService.resolvePermissions(user.id);
+  const resolved = await rbacService.resolvePermissions(user);
   const refresh = await tokenService.issueRefreshToken(REALM, user.id, context);
 
   const accessToken = tokenService.signAccessToken(
@@ -149,9 +149,10 @@ export const adminAuthService = {
       });
     }
 
-    if (user.status === 'DISABLED' || user.status === 'SUSPENDED') {
+    // ACTIVE only. INVITED has no usable password until the invite is accepted.
+    if (user.status !== 'ACTIVE') {
       await passwordService.verifyDummy(input.password);
-      return fail('ACCOUNT_DISABLED');
+      return fail(user.status === 'INVITED' ? 'ACCOUNT_INVITED' : 'ACCOUNT_DISABLED');
     }
 
     if (!(await passwordService.verify(user.passwordHash, input.password))) {
@@ -162,6 +163,19 @@ export const adminAuthService = {
           : null;
       await adminUserRepository.registerFailedLogin(user.id, locked);
       return fail(locked ? 'LOCKED_OUT' : 'BAD_PASSWORD');
+    }
+
+    /*
+     * The development placeholder is published in this repository, so it may open a development
+     * database and never a production one - including an account that was seeded with it before
+     * production refused to boot on it. The caller sees the ordinary failure; the operator sees why.
+     */
+    if (isProduction && passwordService.isPublishedPlaceholder(input.password)) {
+      logger.warn(
+        { adminUserId: user.id },
+        'sign-in refused: this account still uses the published placeholder password — reset it with `npm run admin:reset-password`',
+      );
+      return fail('PUBLISHED_PASSWORD');
     }
 
     if (passwordService.needsRehash(user.passwordHash)) {
@@ -254,13 +268,14 @@ export const adminAuthService = {
     }
 
     const user = await adminUserRepository.findById(rotated.principalId);
-    if (!user || user.deletedAt || user.status === 'DISABLED') {
+    // ACTIVE only: a SUSPENDED or DISABLED admin must not be able to mint fresh access tokens.
+    if (!user || user.status !== 'ACTIVE') {
       await tokenService.revokeFamily(rotated.issued.familyId, 'ACCOUNT_DISABLED');
       cookieService.clearAuthCookies(res, REALM);
       throw new AppError(401, 'ACCOUNT_DISABLED', 'This account is not active');
     }
 
-    const resolved = await rbacService.resolvePermissions(user.id);
+    const resolved = await rbacService.resolvePermissions(user);
     const accessToken = tokenService.signAccessToken(
       REALM,
       { id: user.id, permissionVersion: user.permissionVersion },
@@ -329,7 +344,7 @@ export const adminAuthService = {
     const user = await adminUserRepository.findById(adminUserId);
     if (!user) throw AppError.notFound('Account not found');
 
-    const resolved = await rbacService.resolvePermissions(user.id);
+    const resolved = await rbacService.resolvePermissions(user);
     return {
       user: toAdminUserDto(user),
       roles: resolved.roles,
@@ -349,6 +364,13 @@ export const adminAuthService = {
 
     if (!(await passwordService.verify(user.passwordHash, input.currentPassword))) {
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Your current password is incorrect');
+    }
+
+    // Clearing mustChangePassword while keeping the same secret would make the flag cosmetic.
+    if (input.newPassword === input.currentPassword) {
+      throw AppError.validation('Password must be different from your current password', {
+        field: 'newPassword',
+      });
     }
 
     passwordService.assertPolicy(input.newPassword, { email: user.email, phone: user.phone });
@@ -425,6 +447,11 @@ export const adminAuthService = {
     });
   },
 
+  /**
+   * Completes both a password reset and an invite: `adminUserService.create` issues ADMIN_INVITE
+   * tokens and tells the invitee to use them here. An invite is only good while the account is
+   * still INVITED, so an old invite cannot be replayed as a reset later.
+   */
   async resetPassword(req: Request, input: { token: string; newPassword: string }): Promise<void> {
     const record = await verificationTokenRepository.findByHash(
       tokenService.hashToken(input.token),
@@ -432,7 +459,7 @@ export const adminAuthService = {
 
     if (
       !record ||
-      record.purpose !== 'PASSWORD_RESET' ||
+      (record.purpose !== 'PASSWORD_RESET' && record.purpose !== 'ADMIN_INVITE') ||
       record.principalType !== PRINCIPAL ||
       record.consumedAt ||
       record.expiresAt.getTime() <= Date.now()
@@ -441,7 +468,9 @@ export const adminAuthService = {
     }
 
     const user = await adminUserRepository.findById(record.principalId);
-    if (!user) throw new AppError(400, 'RESET_TOKEN_INVALID', 'This reset link is no longer valid');
+    if (!user || (record.purpose === 'ADMIN_INVITE' && user.status !== 'INVITED')) {
+      throw new AppError(400, 'RESET_TOKEN_INVALID', 'This reset link is no longer valid');
+    }
 
     passwordService.assertPolicy(input.newPassword, { email: user.email, phone: user.phone });
 
@@ -465,7 +494,7 @@ export const adminAuthService = {
       actorId: user.id,
       actorEmail: user.email,
       realm: REALM,
-      meta: { stage: 'COMPLETED' },
+      meta: { stage: 'COMPLETED', purpose: record.purpose },
     });
   },
 

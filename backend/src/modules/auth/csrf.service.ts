@@ -32,9 +32,16 @@ export const csrfService = {
     return MUTATING.has(method.toUpperCase());
   },
 
-  /** True when the caller is relying on cookies rather than an Authorization header. */
+  /**
+   * True when the caller is relying on cookies rather than a Bearer token.
+   *
+   * Only a `Bearer` header exempts, because only a Bearer header replaces the cookie in
+   * `authenticate` (see `readToken`). Any other Authorization header - `Basic` credentials a
+   * browser attaches on its own behind an authenticating proxy, say - leaves the ambient cookie
+   * doing the authenticating, so it must not switch the CSRF check off.
+   */
   usesCookieAuth(req: Request, realm: AuthRealm): boolean {
-    if (req.get('authorization')) return false;
+    if (req.get('authorization')?.toLowerCase().startsWith('bearer ')) return false;
     return Boolean(
       cookieService.readAccessToken(req, realm) ?? cookieService.readRefreshToken(req, realm),
     );

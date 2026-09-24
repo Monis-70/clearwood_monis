@@ -1,8 +1,11 @@
 import type { PricingSettings, PricingTaxClass, TaxSplit } from '@shared/types/pricing';
 import { applyBasisPoints, splitGst, taxFromInclusive } from '@shared/money';
 
+import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
+import { cache } from '../../container';
 import { notDeleted } from '../../repositories/helpers';
+import { PRICING_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
 
 /**
  * GST resolution.
@@ -35,13 +38,22 @@ export const taxService = {
     return row ? toDto(row) : null;
   },
 
-  /** Products without a tax class fall back to the default one, then to a zero-rated stand-in. */
+  /**
+   * Products without a tax class fall back to the default one, then to a zero-rated stand-in.
+   * Cached with the pricing settings: every tax-class write drops that prefix (invalidatePricing).
+   */
   async defaultTaxClass(): Promise<PricingTaxClass> {
-    const row =
-      (await prisma.taxClass.findFirst({ where: { isDefault: true, ...notDeleted } })) ??
-      (await prisma.taxClass.findFirst({ where: { isActive: true, ...notDeleted } }));
+    return cache.wrap(
+      `${PRICING_CACHE_PREFIXES.settings}tax-default`,
+      env.PRICING_CACHE_TTL_SECONDS,
+      async () => {
+        const row =
+          (await prisma.taxClass.findFirst({ where: { isDefault: true, ...notDeleted } })) ??
+          (await prisma.taxClass.findFirst({ where: { isActive: true, ...notDeleted } }));
 
-    return row ? toDto(row) : { id: 'none', code: 'GST_0', rateBp: 0, hsnCode: null };
+        return row ? toDto(row) : { id: 'none', code: 'GST_0', rateBp: 0, hsnCode: null };
+      },
+    );
   },
 
   async allTaxClasses(): Promise<PricingTaxClass[]> {

@@ -91,6 +91,17 @@ export class MockPaymentDriver implements PaymentDriver {
   readonly keySecret = MOCK_KEY_SECRET;
   readonly webhookSecret = MOCK_WEBHOOK_SECRET;
 
+  /**
+   * The secrets above are public, so anybody can produce a "valid" mock signature. Where that
+   * matters - production - every signature is refused instead, so a forged checkout or webhook can
+   * never confirm an order that nobody paid for.
+   */
+  private readonly refuseSignatures: boolean;
+
+  constructor(options: { refuseSignatures?: boolean } = {}) {
+    this.refuseSignatures = options.refuseSignatures ?? false;
+  }
+
   private scenario: MockScenario = 'success';
   private providerReverses = false;
   private permissiveRefunds = false;
@@ -233,6 +244,8 @@ export class MockPaymentDriver implements PaymentDriver {
     providerPaymentId: string;
     signature: string;
   }): boolean {
+    if (this.refuseSignatures) return false;
+
     const expected = Buffer.from(this.sign(`${input.providerOrderId}|${input.providerPaymentId}`));
     const provided = Buffer.from(input.signature ?? '');
 
@@ -487,6 +500,8 @@ export class MockPaymentDriver implements PaymentDriver {
   /* ----------------------------------------------------------- webhooks */
 
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): boolean {
+    if (this.refuseSignatures) return false;
+
     const expected = Buffer.from(
       createHmac('sha256', this.webhookSecret).update(rawBody).digest('hex'),
     );

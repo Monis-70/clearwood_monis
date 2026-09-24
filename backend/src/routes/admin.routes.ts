@@ -45,8 +45,21 @@ const ADMIN_PREFIX = `${API_PREFIX}/admin`;
 
 const guard = [authenticate('ADMIN'), csrfProtection('ADMIN')];
 
+/**
+ * Self-service only: who am I, change my password, list or end my sessions. These are the routes an
+ * admin who still has to replace their initial password may reach; every other admin route answers
+ * 403 PASSWORD_CHANGE_REQUIRED until they do.
+ */
+const selfService = authenticate('ADMIN', { allowPendingPasswordChange: true });
+const selfServiceGuard = [selfService, csrfProtection('ADMIN')];
+
 const unauthorised = { 401: jsonContent(errorBodySchema, 'Not authenticated') };
-const forbidden = { 403: jsonContent(errorBodySchema, 'Missing permission or CSRF token') };
+const forbidden = {
+  403: jsonContent(
+    errorBodySchema,
+    'Missing permission, CSRF token, or a password change is still pending',
+  ),
+};
 
 const adminUserSchema = registry.register(
   'AdminUser',
@@ -325,27 +338,31 @@ adminRouter.post(
 
 /* --------------------------------------------------------- authenticated */
 
-adminRouter.get('/auth/me', authenticate('ADMIN'), asyncHandler(adminAuthController.me));
+adminRouter.get('/auth/me', selfService, asyncHandler(adminAuthController.me));
 
-adminRouter.post('/auth/logout-all', ...guard, asyncHandler(adminAuthController.logoutAll));
+adminRouter.post(
+  '/auth/logout-all',
+  ...selfServiceGuard,
+  asyncHandler(adminAuthController.logoutAll),
+);
 
 adminRouter.post(
   '/auth/change-password',
-  ...guard,
+  ...selfServiceGuard,
   validate({ body: changePasswordSchema }),
   asyncHandler(adminAuthController.changePassword),
 );
 
 adminRouter.get(
   '/auth/sessions',
-  authenticate('ADMIN'),
+  selfService,
   validate({ query: sessionListQuerySchema }),
   asyncHandler(adminAuthController.listSessions),
 );
 
 adminRouter.delete(
   '/auth/sessions/:id',
-  ...guard,
+  ...selfServiceGuard,
   validate({ params: idParamSchema }),
   asyncHandler(adminAuthController.revokeSession),
 );

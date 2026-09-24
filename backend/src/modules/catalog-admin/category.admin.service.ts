@@ -8,7 +8,12 @@ import type {
   CategoryUpdateInput,
   ReorderInput,
 } from '@shared/schemas/catalogAdmin';
-import type { AdminCategoryDto, CategoryDeleteImpactDto } from '@shared/types/catalogAdmin';
+import type { ListQuery } from '@shared/schemas/common';
+import type {
+  AdminCategoryDto,
+  AdminCategoryProductDto,
+  CategoryDeleteImpactDto,
+} from '@shared/types/catalogAdmin';
 
 import { prisma } from '../../config/prisma';
 import { categoryRepository } from '../../repositories/category.repository';
@@ -20,6 +25,7 @@ import { ensureUniqueSlug, slugify } from '../../utils/slug';
 import { mediaUsageService } from '../media/media-usage.service';
 
 import { catalogCacheService } from './catalogCache.service';
+import { publicationOf } from './product.admin.service';
 import { slugRedirectService } from './slugRedirect.service';
 
 /**
@@ -47,6 +53,7 @@ export async function toAdminDto(category: Category): Promise<AdminCategoryDto> 
     showInMenu: category.showInMenu,
     menuColumn: category.menuColumn,
     isFeatured: category.isFeatured,
+    leadFormKey: category.leadFormKey,
     shortDescription: category.shortDescription,
     description: category.description,
     iconMediaId: category.iconMediaId,
@@ -79,6 +86,7 @@ function dtoSync(category: Category, childCount: number): AdminCategoryDto {
     showInMenu: category.showInMenu,
     menuColumn: category.menuColumn,
     isFeatured: category.isFeatured,
+    leadFormKey: category.leadFormKey,
     shortDescription: category.shortDescription,
     description: category.description,
     iconMediaId: category.iconMediaId,
@@ -179,6 +187,7 @@ export const categoryAdminService = {
       showInMenu: input.showInMenu,
       menuColumn: input.menuColumn ?? null,
       isFeatured: input.isFeatured,
+      leadFormKey: input.leadFormKey ?? null,
       shortDescription: input.shortDescription ?? null,
       description: input.description ?? null,
       iconMediaId: input.iconMediaId ?? null,
@@ -191,7 +200,8 @@ export const categoryAdminService = {
     });
 
     await syncMediaUsage(created);
-    await catalogCacheService.invalidateCategoryTree();
+    // A brand-new node has no products, so no product document mentions it yet.
+    await catalogCacheService.invalidateCategoryTree([]);
 
     return toAdminDto(created);
   },
@@ -214,6 +224,21 @@ export const categoryAdminService = {
       if (value !== undefined) data[key] = value;
     }
 
+    // A service line takes enquiries, not products: it cannot become one while it holds some.
+    if (rest.kind === 'SERVICE' && existing.kind !== 'SERVICE') {
+      const products = await prisma.productCategory.count({
+        where: { categoryId: id, product: { deletedAt: null } },
+      });
+      if (products > 0) {
+        throw new AppError(
+          409,
+          'CATEGORY_HAS_PRODUCTS',
+          'Move its products elsewhere before making this a service category',
+          { id, products },
+        );
+      }
+    }
+
     const slugChanged = slug !== existing.slug;
     if (slugChanged) {
       data.slug = slug;
@@ -232,7 +257,7 @@ export const categoryAdminService = {
 
     const updated = await loadOrThrow(id, true);
     await syncMediaUsage(updated, existing);
-    await catalogCacheService.invalidateCategory();
+    await catalogCacheService.invalidateCategory([id]);
 
     return toAdminDto(updated);
   },
@@ -274,7 +299,7 @@ export const categoryAdminService = {
     });
 
     await categoryPathService.recomputeSubtree(id);
-    await catalogCacheService.invalidateCategoryTree();
+    await catalogCacheService.invalidateCategoryTree([id]);
 
     return toAdminDto(await loadOrThrow(id));
   },
@@ -285,13 +310,58 @@ export const categoryAdminService = {
         prisma.category.update({ where: { id: item.id }, data: { position: item.position } }),
       ),
     );
-    await catalogCacheService.invalidateCategoryTree();
+    await catalogCacheService.invalidateCategoryTree([]);
+    return input.items.length;
+  },
+
+  /** The category's own products in the order its CURATED storefront listing shows them. */
+  async listProducts(id: string, query: ListQuery): Promise<PageResult<AdminCategoryProductDto>> {
+    await loadOrThrow(id, true);
+    const page = await categoryRepository.listProductLinks(id, query);
+    return {
+      ...page,
+      items: page.items.map((link) => ({
+        productId: link.productId,
+        sku: link.product.sku,
+        name: link.product.name,
+        slug: link.product.slug,
+        status: link.product.status,
+        visibility: link.product.visibility,
+        publication: publicationOf(link.product),
+        isPrimary: link.isPrimary,
+        position: link.position,
+      })),
+    };
+  },
+
+  /** Positions inside one category's curated order. Every product must already be linked. */
+  async reorderProducts(id: string, input: ReorderInput): Promise<number> {
+    await loadOrThrow(id);
+
+    const productIds = input.items.map((item) => item.id);
+    const repeated = productIds.filter(
+      (productId, index) => productIds.indexOf(productId) !== index,
+    );
+    if (repeated.length > 0) {
+      throw AppError.validation('A product may appear only once', { productIds: repeated });
+    }
+
+    const linked = await categoryRepository.findLinkedProductIds(id, productIds);
+    const missing = productIds.filter((productId) => !linked.has(productId));
+    if (missing.length > 0) {
+      throw AppError.validation('These products are not in this category', {
+        productIds: missing,
+      });
+    }
+
+    await categoryRepository.setProductPositions(id, input.items);
+    await catalogCacheService.invalidateCategoryMerchandising();
     return input.items.length;
   },
 
   async bulkSetActive(ids: string[], isActive: boolean): Promise<number> {
     const { count } = await categoryRepository.setActive(ids, isActive);
-    await catalogCacheService.invalidateCategoryTree();
+    await catalogCacheService.invalidateCategoryTree(ids);
     return count;
   },
 
@@ -337,7 +407,8 @@ export const categoryAdminService = {
 
   /**
    * BLOCK              refuse while anything depends on it (default)
-   * SOFT               soft-delete just this node (only when it is already empty)
+   * SOFT               soft-delete just this node; anything still under it becomes unreachable
+   *                    with it (a missing ancestor is a hidden one) until the node is restored
    * REASSIGN_CHILDREN  children move up to the parent, then this node is soft-deleted
    * CASCADE_SOFT       the whole subtree is soft-deleted in one transaction
    */
@@ -355,6 +426,8 @@ export const categoryAdminService = {
     }
 
     let ids = [id];
+    const children =
+      strategy === 'REASSIGN_CHILDREN' ? await categoryRepository.findChildren(id, true) : [];
 
     if (strategy === 'CASCADE_SOFT') {
       const descendants = await categoryRepository.findDescendants(category.path);
@@ -365,11 +438,16 @@ export const categoryAdminService = {
 
     await categoryRepository.softDelete(ids);
 
-    if (strategy === 'REASSIGN_CHILDREN' && category.parentId) {
-      await categoryPathService.recomputeSubtree(category.parentId);
+    if (strategy === 'REASSIGN_CHILDREN') {
+      // Children of a removed ROOT become roots themselves: each subtree's path starts over.
+      if (category.parentId) await categoryPathService.recomputeSubtree(category.parentId);
+      else for (const child of children) await categoryPathService.recomputeSubtree(child.id);
     }
 
-    await catalogCacheService.invalidateCategoryTree();
+    await catalogCacheService.invalidateCategoryTree([
+      ...ids,
+      ...children.map((child) => child.id),
+    ]);
     return { deleted: ids.length };
   },
 
@@ -377,8 +455,19 @@ export const categoryAdminService = {
     const category = await categoryRepository.findByIdForAdmin(id, true);
     if (!category) throw AppError.notFound('Category not found', { id });
 
+    // Restoring under a deleted parent would leave a live node hanging off a dead branch.
+    if (category.deletedAt && category.parentId) {
+      const parent = await categoryRepository.findByIdForAdmin(category.parentId, true);
+      if (!parent || parent.deletedAt) {
+        throw new AppError(409, 'CATEGORY_PARENT_DELETED', 'Restore the parent category first', {
+          id,
+          parentId: category.parentId,
+        });
+      }
+    }
+
     const restored = await categoryRepository.restore(id);
-    await catalogCacheService.invalidateCategoryTree();
+    await catalogCacheService.invalidateCategoryTree([id]);
     return toAdminDto(restored);
   },
 };

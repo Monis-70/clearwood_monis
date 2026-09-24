@@ -445,7 +445,13 @@ describe('publishing', () => {
     });
 
     await prisma.productMedia.create({
-      data: { productId: product.id, mediaId: media.id, role: 'PRIMARY', position: 0 },
+      data: {
+        productId: product.id,
+        mediaId: media.id,
+        role: 'PRIMARY',
+        primaryMark: true,
+        position: 0,
+      },
     });
 
     await prisma.taxClass.update({ where: { id: taxClass.id }, data: { isActive: false } });
@@ -478,7 +484,13 @@ describe('publishing', () => {
     });
 
     await prisma.productMedia.create({
-      data: { productId: product.id, mediaId: media.id, role: 'PRIMARY', position: 0 },
+      data: {
+        productId: product.id,
+        mediaId: media.id,
+        role: 'PRIMARY',
+        primaryMark: true,
+        position: 0,
+      },
     });
 
     const blockers = await as(catalogManager).get(
@@ -527,7 +539,13 @@ describe('duplicate', () => {
     // Opening balance through the ledgered writer, not a bare create.
     await setStockForVariant(variant.id, 12);
     await prisma.productMedia.create({
-      data: { productId: created.id, mediaId: media.id, role: 'PRIMARY', position: 0 },
+      data: {
+        productId: created.id,
+        mediaId: media.id,
+        role: 'PRIMARY',
+        primaryMark: true,
+        position: 0,
+      },
     });
     await prisma.product.update({
       where: { id: created.id },

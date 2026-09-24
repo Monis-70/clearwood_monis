@@ -179,10 +179,14 @@ export const addressService = {
    * `shipping.service`, so the form and the cart can never disagree about a pincode.
    */
   async lookupPincode(pincode: string): Promise<PincodeLookupDto> {
-    const key = `${CART_CACHE_PREFIXES.pincode}${pincode}`;
-    const cached = await cache.get<PincodeLookupDto>(key);
-    if (cached) return cached;
+    return cache.wrap(
+      `${CART_CACHE_PREFIXES.pincode}${pincode}`,
+      env.CATALOG_CACHE_TTL_SECONDS,
+      () => this.resolvePincode(pincode),
+    );
+  },
 
+  async resolvePincode(pincode: string): Promise<PincodeLookupDto> {
     const [row, serviceability] = await Promise.all([
       addressRepository.findPincode(pincode),
       shippingService.serviceability(pincode),
@@ -202,7 +206,6 @@ export const addressService = {
       matchedBy: serviceability.matchedBy,
     };
 
-    await cache.set(key, result, env.CATALOG_CACHE_TTL_SECONDS);
     return result;
   },
 };

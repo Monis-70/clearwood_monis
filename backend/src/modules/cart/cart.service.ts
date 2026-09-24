@@ -26,7 +26,7 @@ import { optionAvailabilityService } from '../storefront/optionAvailability.serv
 import type { CartOwner } from './cartIdentity';
 import { cartIdentity } from './cartIdentity';
 import { cartPricingService, parseOptions } from './cartPricing.service';
-import { cartValidationService } from './cartValidation.service';
+import { cartValidationService, type LineFacts } from './cartValidation.service';
 import { buildLineKey, hashCustomization } from './lineKey';
 
 /**
@@ -425,16 +425,19 @@ export const cartService = {
     cart: CartWithItems,
     options: { customerId?: string | null; coupon?: CartDto['coupon'] } = {},
   ): Promise<CartDto> {
+    const facts = cartValidationService.factsFor(cart);
+    const quoted = cartPricingService.quote(cart, options);
     const [{ breakdown, byLineId, priceChanges }, validation, settings] = await Promise.all([
-      cartPricingService.quote(cart, options),
-      cartValidationService.validate(cart, options),
+      quoted,
+      // The same cart, the same quote: validation reads the one already in flight.
+      cartValidationService.validate(cart, { ...options, facts, quoted }),
       pricingContextLoader.readSettings(),
     ]);
 
     const [lines, saved, delivery] = await Promise.all([
-      this.linesToDto(cart, 'IN_CART', byLineId),
-      this.linesToDto(cart, 'SAVED_FOR_LATER', byLineId),
-      this.deliveryFor(cart),
+      this.linesToDto(cart, 'IN_CART', byLineId, facts),
+      this.linesToDto(cart, 'SAVED_FOR_LATER', byLineId, facts),
+      this.deliveryFor(cart, facts),
     ]);
 
     return {
@@ -474,6 +477,7 @@ export const cartService = {
     cart: CartWithItems,
     saveState: SaveState,
     byLineId: Map<string, LineBreakdown>,
+    preloadedFacts?: Promise<LineFacts[]>,
   ): Promise<CartLineDto[]> {
     const items = cart.items
       .filter((item) => item.saveState === saveState)
@@ -489,7 +493,7 @@ export const cartService = {
       cartRepository.findAttributeValues([
         ...new Set(items.flatMap((item) => parseOptions(item.selectedOptionsJson))),
       ]),
-      cartValidationService.factsFor(cart),
+      preloadedFacts ?? cartValidationService.factsFor(cart),
     ]);
 
     const productById = new Map(products.map((product) => [product.id, product]));
@@ -585,11 +589,14 @@ export const cartService = {
     });
   },
 
-  async deliveryFor(cart: CartWithItems): Promise<CartDeliveryDto | null> {
+  async deliveryFor(
+    cart: CartWithItems,
+    preloadedFacts?: Promise<LineFacts[]>,
+  ): Promise<CartDeliveryDto | null> {
     if (!cart.pincode) return null;
 
     const result = await shippingService.serviceability(cart.pincode);
-    const facts = await cartValidationService.factsFor(cart);
+    const facts = await (preloadedFacts ?? cartValidationService.factsFor(cart));
 
     return {
       pincode: cart.pincode,

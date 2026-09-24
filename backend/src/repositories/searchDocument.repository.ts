@@ -1,4 +1,4 @@
-import type { Prisma, SearchDocument, SearchSynonym } from '@prisma/client';
+import type { Prisma, SearchSynonym } from '@prisma/client';
 
 import type { SearchEntityType } from '@shared/enums';
 
@@ -17,6 +17,49 @@ export interface SearchScanFilter {
   inStockOnly?: boolean;
 }
 
+/** What a query needs of every candidate; the long text columns are read once per checksum. */
+const headSelect = {
+  id: true,
+  entityType: true,
+  entityId: true,
+  slug: true,
+  title: true,
+  subtitle: true,
+  boostScore: true,
+  popularityScore: true,
+  checksum: true,
+} satisfies Prisma.SearchDocumentSelect;
+
+const textSelect = {
+  id: true,
+  checksum: true,
+  title: true,
+  sku: true,
+  brandText: true,
+  categoryText: true,
+  attributeText: true,
+  keywordsText: true,
+  bodyText: true,
+} satisfies Prisma.SearchDocumentSelect;
+
+export type SearchDocumentHead = Prisma.SearchDocumentGetPayload<{ select: typeof headSelect }>;
+export type SearchDocumentText = Prisma.SearchDocumentGetPayload<{ select: typeof textSelect }>;
+
+const TEXT_FIELDS = [
+  'title',
+  'sku',
+  'brandText',
+  'categoryText',
+  'attributeText',
+  'keywordsText',
+] as const;
+
+/** Ties broken by id DESC: MySQL then reads SearchDocument_popularityScore_idx backwards, no sort. */
+const POPULAR_FIRST = [
+  { popularityScore: 'desc' },
+  { id: 'desc' },
+] satisfies Prisma.SearchDocumentOrderByWithRelationInput[];
+
 function scanWhere(filter: SearchScanFilter): Prisma.SearchDocumentWhereInput {
   return {
     isActive: true,
@@ -28,17 +71,51 @@ function scanWhere(filter: SearchScanFilter): Prisma.SearchDocumentWhereInput {
 }
 
 export const searchDocumentRepository = {
-  /**
-   * The candidate set the driver scores in memory.
-   *
-   * MySQL upgrade: replace this with a `MATCH(title, bodyText, keywordsText) AGAINST (?)`
-   * pre-filter — the scoring above it does not change.
-   */
-  scan(filter: SearchScanFilter, take: number): Promise<SearchDocument[]> {
+  /** The candidate window the driver scores in memory: the most popular documents first. */
+  scanHeads(filter: SearchScanFilter, take: number): Promise<SearchDocumentHead[]> {
     return prisma.searchDocument.findMany({
       where: scanWhere(filter),
-      orderBy: [{ popularityScore: 'desc' }, { id: 'asc' }],
+      select: headSelect,
+      orderBy: POPULAR_FIRST,
       take,
+    });
+  },
+
+  /**
+   * The most popular documents containing EVERY word in a short field (title, SKU, brand,
+   * category, attributes, keywords - the body would double the scan for the weakest field). Only
+   * asked for when the index is larger than the window, so an exact title or SKU can never fall
+   * outside it. The columns' utf8mb4_0900_ai_ci collation folds case and accents as `normalise`.
+   */
+  headsWithEveryWord(
+    filter: SearchScanFilter,
+    words: string[],
+    take: number,
+  ): Promise<SearchDocumentHead[]> {
+    return prisma.searchDocument.findMany({
+      where: {
+        ...scanWhere(filter),
+        AND: words.map((word) => ({
+          OR: TEXT_FIELDS.map(
+            (field) => ({ [field]: { contains: word } }) as Prisma.SearchDocumentWhereInput,
+          ),
+        })),
+      },
+      select: headSelect,
+      orderBy: POPULAR_FIRST,
+      take,
+    });
+  },
+
+  texts(ids: string[]): Promise<SearchDocumentText[]> {
+    if (ids.length === 0) return Promise.resolve([]);
+    return prisma.searchDocument.findMany({ where: { id: { in: ids } }, select: textSelect });
+  },
+
+  /** The whole stored document, for the admin index inspector. */
+  findActive(entityType: SearchEntityType, entityId: string, locale: string) {
+    return prisma.searchDocument.findFirst({
+      where: { entityType, entityId, locale, isActive: true },
     });
   },
 
@@ -98,31 +175,6 @@ export const searchDocumentRepository = {
       where: { entityType: 'PRODUCT', entityId },
       data: { popularityScore },
     });
-  },
-
-  findPriceBounds(
-    entityIds: string[],
-  ): Promise<{ entityId: string; minPricePaise: number | null; maxPricePaise: number | null }[]> {
-    return prisma.searchDocument.findMany({
-      where: { entityType: 'PRODUCT', entityId: { in: entityIds } },
-      select: { entityId: true, minPricePaise: true, maxPricePaise: true },
-    });
-  },
-
-  /** Global slider bounds for a scope, straight off the indexed default-group range. */
-  async priceExtent(entityIds: string[]): Promise<{ minPaise: number; maxPaise: number }> {
-    if (entityIds.length === 0) return { minPaise: 0, maxPaise: 0 };
-
-    const aggregate = await prisma.searchDocument.aggregate({
-      where: { entityType: 'PRODUCT', entityId: { in: entityIds } },
-      _min: { minPricePaise: true },
-      _max: { maxPricePaise: true },
-    });
-
-    return {
-      minPaise: aggregate._min.minPricePaise ?? 0,
-      maxPaise: aggregate._max.maxPricePaise ?? 0,
-    };
   },
 };
 

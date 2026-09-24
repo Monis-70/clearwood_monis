@@ -8,14 +8,18 @@ import type { ProductMediaItemDto } from '@shared/types/media';
 
 import { prisma } from '../../config/prisma';
 import { mediaRepository } from '../../repositories/media.repository';
+import { productRepository } from '../../repositories/product.repository';
 import {
   productMediaRepository,
   type ProductMediaWithMedia,
 } from '../../repositories/productMedia.repository';
 import { AppError } from '../../utils/AppError';
+import { mark } from '../../utils/uniqueMark';
+import { catalogCacheService } from '../catalog-admin/catalogCache.service';
+import { productAdminService } from '../catalog-admin/product.admin.service';
 
 import { toMediaDto } from './media.service';
-import { mediaUsageService } from './media-usage.service';
+import { mediaUsageService, type UsageRef } from './media-usage.service';
 
 /**
  * Product gallery membership. Every attach/detach also writes a MediaUsage row, which is what makes
@@ -97,33 +101,38 @@ export const productMediaService = {
         await assertAttributeValueBelongs(productId, item.attributeValueId);
       if (item.variantId) await assertVariantBelongs(productId, item.variantId);
 
-      const existing = await productMediaRepository.findExisting(
-        productId,
-        item.mediaId,
-        item.attributeValueId ?? null,
-        item.variantId ?? null,
-      );
-      if (existing) {
-        throw AppError.conflict('That image is already attached to this product', {
-          mediaId: item.mediaId,
-        });
-      }
-
       nextPosition += 1;
-      const row = await productMediaRepository.create({
-        productId,
-        mediaId: item.mediaId,
-        role: item.role,
-        position: item.position ?? nextPosition,
-        altText: item.altText ?? media.altText ?? null,
-        deviceTarget: item.deviceTarget,
-        attributeValueId: item.attributeValueId ?? null,
-        variantId: item.variantId ?? null,
-      });
+      const isPrimary = item.role === 'PRIMARY';
+      const row = await productRepository.withProductLock(productId, async (tx) => {
+        const existing = await productMediaRepository.findExisting(
+          productId,
+          item.mediaId,
+          item.attributeValueId ?? null,
+          item.variantId ?? null,
+          tx,
+        );
+        if (existing) {
+          throw AppError.conflict('That image is already attached to this product', {
+            mediaId: item.mediaId,
+          });
+        }
 
-      if (item.role === 'PRIMARY') {
-        await productMediaRepository.demoteOtherPrimaries(productId, row.id);
-      }
+        if (isPrimary) await productMediaRepository.demoteOtherPrimaries(productId, null, tx);
+        return productMediaRepository.create(
+          {
+            productId,
+            mediaId: item.mediaId,
+            role: item.role,
+            primaryMark: mark(isPrimary),
+            position: item.position ?? nextPosition,
+            altText: item.altText ?? media.altText ?? null,
+            deviceTarget: item.deviceTarget,
+            attributeValueId: item.attributeValueId ?? null,
+            variantId: item.variantId ?? null,
+          },
+          tx,
+        );
+      });
 
       await mediaUsageService.attach({
         mediaId: item.mediaId,
@@ -135,6 +144,7 @@ export const productMediaService = {
       attached.push(toDto(row));
     }
 
+    await invalidateGallery(productId);
     return attached;
   },
 
@@ -152,20 +162,35 @@ export const productMediaService = {
       await assertAttributeValueBelongs(productId, input.attributeValueId);
     if (input.variantId) await assertVariantBelongs(productId, input.variantId);
 
-    const row = await productMediaRepository.update(id, {
-      ...(input.role === undefined ? {} : { role: input.role }),
-      ...(input.altText === undefined ? {} : { altText: input.altText ?? null }),
-      ...(input.deviceTarget === undefined ? {} : { deviceTarget: input.deviceTarget }),
-      ...(input.attributeValueId === undefined
-        ? {}
-        : { attributeValueId: input.attributeValueId ?? null }),
-      ...(input.variantId === undefined ? {} : { variantId: input.variantId ?? null }),
+    const row = await productRepository.withProductLock(productId, async (tx) => {
+      if (input.role === 'PRIMARY') {
+        await productMediaRepository.demoteOtherPrimaries(productId, id, tx);
+      }
+      return productMediaRepository.update(
+        id,
+        {
+          ...(input.role === undefined
+            ? {}
+            : { role: input.role, primaryMark: mark(input.role === 'PRIMARY') }),
+          ...(input.altText === undefined ? {} : { altText: input.altText ?? null }),
+          ...(input.deviceTarget === undefined ? {} : { deviceTarget: input.deviceTarget }),
+          ...(input.attributeValueId === undefined
+            ? {}
+            : { attributeValueId: input.attributeValueId ?? null }),
+          ...(input.variantId === undefined ? {} : { variantId: input.variantId ?? null }),
+        },
+        tx,
+      );
     });
 
-    if (input.role === 'PRIMARY') {
-      await productMediaRepository.demoteOtherPrimaries(productId, id);
+    // Moved between the product and a variant: the usage ledger follows, or a hard delete of
+    // the asset would be judged against the wrong owner.
+    if (row.variantId !== existing.variantId) {
+      await mediaUsageService.attach(galleryUsage(productId, row.mediaId, row.variantId));
+      await detachIfUnused(productId, existing.mediaId, existing.variantId);
     }
 
+    await invalidateGallery(productId);
     return toDto(row);
   },
 
@@ -181,6 +206,7 @@ export const productMediaService = {
       await productMediaRepository.setPosition(item.id, item.position);
     }
 
+    await invalidateGallery(productId);
     return this.list(productId);
   },
 
@@ -204,5 +230,41 @@ export const productMediaService = {
         field: 'gallery',
       });
     }
+
+    await invalidateGallery(productId);
   },
 };
+
+/** Who owns a gallery row in the usage ledger: its variant, or the product itself. */
+function galleryUsage(productId: string, mediaId: string, variantId: string | null): UsageRef {
+  return {
+    mediaId,
+    usageType: variantId ? 'PRODUCT_VARIANT' : 'PRODUCT',
+    entityId: variantId ?? productId,
+    field: 'gallery',
+  };
+}
+
+/** Drops an owner's usage row once none of its gallery rows shows the asset any more. */
+async function detachIfUnused(
+  productId: string,
+  mediaId: string,
+  variantId: string | null,
+): Promise<void> {
+  const remaining = await prisma.productMedia.count({ where: { productId, mediaId, variantId } });
+  if (remaining === 0) await mediaUsageService.detach(galleryUsage(productId, mediaId, variantId));
+}
+
+/**
+ * A gallery change touches that product's pages and the card payloads, nothing else - and its
+ * stored completeness score, which counts the primary image and the gallery.
+ */
+async function invalidateGallery(productId: string): Promise<void> {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { slug: true },
+  });
+  if (!product) return;
+  await productAdminService.refreshCompleteness(productId);
+  await catalogCacheService.invalidateProductMedia(product.slug);
+}

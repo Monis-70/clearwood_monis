@@ -49,6 +49,9 @@ describe('DEBUG_QUERY_COUNT', () => {
 
   it('attributes queries to the request that issued them, not to whatever ran before', async () => {
     const app = await appWithCounter();
+    // Cold on purpose: since Prompt 4 a repeated grid is a cache hit that issues no queries.
+    const { cache } = await import('../src/container');
+    await cache.delByPrefix('sf:');
 
     const listing = await request(app).get('/api/v1/catalog/products?limit=6');
     const health = await request(app).get('/health');

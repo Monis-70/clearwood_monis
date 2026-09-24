@@ -3,11 +3,13 @@ import type { MatrixCombinationDto, VariantMatrixPreviewDto } from '@shared/type
 
 import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
+import { productRepository } from '../../repositories/product.repository';
 import { categoryAttributeService } from '../../services/categoryAttribute.service';
 import { AppError } from '../../utils/AppError';
 
 import { catalogCacheService } from './catalogCache.service';
 import { stockStatusFor } from './inventory.service';
+import { combinationKeyOf } from './variantOptions';
 
 /**
  * The variant matrix: "this sofa comes in 3 fabrics × 2 sizes × 2 leg finishes".
@@ -219,10 +221,20 @@ export const variantMatrixService = {
       (await prisma.productVariant.findMany({ select: { sku: true } })).map((row) => row.sku),
     );
 
-    const existingCount = await prisma.productVariant.count({ where: { productId } });
+    const created = await productRepository.withProductLock(productId, async (tx) => {
+      // Re-read under the lock: another admin may have generated some of these since the preview.
+      const live = await tx.productVariant.findMany({
+        where: { productId, combinationKey: { not: null } },
+        select: { combinationKey: true },
+      });
+      const existingKeys = new Set(live.map((row) => row.combinationKey));
+      const existingCount = await tx.productVariant.count({ where: { productId } });
 
-    await prisma.$transaction(async (tx) => {
-      for (const [index, combination] of missing.entries()) {
+      let count = 0;
+      for (const combination of missing) {
+        const combinationKey = combinationKeyOf(combination.values);
+        if (existingKeys.has(combinationKey)) continue;
+
         let sku = combination.sku;
         let suffix = 2;
         while (taken.has(sku)) {
@@ -238,9 +250,10 @@ export const variantMatrixService = {
             name: input.namePattern ? input.namePattern : combination.name,
             // Real per-option pricing arrives with the Prompt 6 PriceAdjustment engine.
             pricePaise: input.pricingMode === 'FIXED' ? product.basePricePaise : null,
-            position: existingCount + index,
+            position: existingCount + count,
             isActive: true,
             isDefault: false,
+            combinationKey,
             stockStatus: stockStatusFor({
               stockQty: 0,
               lowStockThreshold: 0,
@@ -257,11 +270,13 @@ export const variantMatrixService = {
             },
           },
         });
+        count += 1;
       }
+      return count;
     });
 
     await catalogCacheService.invalidateProduct(productId, 'variant-matrix');
 
-    return { created: missing.length, preview: await this.preview(productId, input) };
+    return { created, preview: await this.preview(productId, input) };
   },
 };

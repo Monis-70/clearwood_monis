@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { ProviderFailureKind } from '@shared/enums';
 import type { ProviderCapabilities } from '@shared/types/fulfilment';
 
+import { shiprocketAllowed } from '../../config/env';
 import { logger } from '../../config/logger';
 import {
   ProviderError,
@@ -74,6 +75,16 @@ export const providerGateway = {
         422,
         'SHIPPING_PROVIDER_DISABLED',
         `Shipping provider ${row.code} is disabled`,
+      );
+    }
+
+    // Shiprocket is ON HOLD: switching its row on in the admin must not reach an unverified API.
+    if (row.driver === 'shiprocket' && !shiprocketAllowed) {
+      throw new AppError(
+        422,
+        'SHIPPING_PROVIDER_DISABLED',
+        `Shipping provider ${row.code} is on hold in this environment`,
+        { provider: row.code, requires: ['SHIPROCKET_ENABLED', 'SHIPPING_PROVIDER_VERIFIED'] },
       );
     }
 

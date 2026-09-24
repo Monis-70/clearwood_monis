@@ -30,13 +30,17 @@ describe('GET /api/v1/catalog/categories/tree', () => {
     const roots = response.body.data as TreeNode[];
     const all = flatten(roots);
 
-    expect(roots).toHaveLength(12);
-    expect(all).toHaveLength(111);
+    expect(roots).toHaveLength(16);
+    expect(all).toHaveLength(160);
 
     const sofas = roots.find((node) => node.slug === 'sofas');
     expect(sofas?.children).toHaveLength(21);
     expect(roots.find((node) => node.slug === 'chairs')?.children).toHaveLength(13);
     expect(roots.find((node) => node.slug === 'dining')?.children).toHaveLength(12);
+    expect(roots.find((node) => node.slug === 'bedroom-headboard')?.children).toHaveLength(6);
+    expect(roots.find((node) => node.slug === 'furniture-pillows')?.children).toHaveLength(18);
+    expect(roots.find((node) => node.slug === 'furniture-accessories')?.children).toHaveLength(12);
+    expect(roots.find((node) => node.slug === 'contract-based-work')?.children).toHaveLength(9);
     expect(roots.find((node) => node.slug === 'new-arrivals')?.children).toHaveLength(0);
   });
 
@@ -50,13 +54,16 @@ describe('GET /api/v1/catalog/categories/tree', () => {
     expect(byslug.get('new-arrivals')?.kind).toBe('NEW_ARRIVALS');
     expect(byslug.get('interior-living-room')?.kind).toBe('INTERIOR_SOLUTION');
     expect(byslug.get('fabric-sofas')?.kind).toBe('STANDARD');
+    expect(byslug.get('exclusive-accessories')?.kind).toBe('SPECIAL_COLLECTION');
+    expect(byslug.get('contract-based-work')?.kind).toBe('SERVICE');
+    expect(byslug.get('custom-bank-furniture')?.kind).toBe('SERVICE');
   });
 
   it('honours the depth limit', async () => {
     const response = await request(app).get('/api/v1/catalog/categories/tree').query({ depth: 1 });
 
     const all = flatten(response.body.data as TreeNode[]);
-    expect(all).toHaveLength(12);
+    expect(all).toHaveLength(16);
     expect(all.every((node) => node.depth === 0)).toBe(true);
   });
 
@@ -129,7 +136,7 @@ describe('GET /api/v1/catalog/attributes', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data).toHaveLength(5);
-    expect(response.body.meta).toMatchObject({ page: 1, limit: 5, total: 14, hasNext: true });
+    expect(response.body.meta).toMatchObject({ page: 1, limit: 5, total: 18, hasNext: true });
   });
 
   it('resolves the inherited set when a categorySlug is supplied', async () => {
@@ -168,6 +175,13 @@ describe('GET /api/v1/navigation/:key', () => {
     const sofas = furnitures?.children.find((item) => item.categorySlug === 'sofas');
     expect(sofas?.url).toBe('/c/sofas');
     expect(sofas?.children).toHaveLength(21);
+
+    // A service line sits beside "Furnitures", not inside it.
+    const contract = menu.items.find((item) => item.categorySlug === 'contract-based-work');
+    expect(contract?.children).toHaveLength(9);
+    expect(furnitures?.children.some((item) => item.categorySlug === 'contract-based-work')).toBe(
+      false,
+    );
   });
 
   it('carries the three lead-capture items with their form keys', async () => {

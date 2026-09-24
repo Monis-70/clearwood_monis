@@ -131,6 +131,7 @@ const categoryNodeBaseSchema = z.object({
   depth: z.number().int(),
   position: z.number().int(),
   kind: categoryKindSchema,
+  leadFormKey: z.string().nullable(),
   parentId: idSchema.nullable(),
   isActive: z.boolean(),
   showInMenu: z.boolean(),

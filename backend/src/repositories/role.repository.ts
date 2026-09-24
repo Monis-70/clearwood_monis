@@ -102,8 +102,9 @@ export const roleRepository = {
   /** Every permission code granted to an admin user, across all of their roles. */
   async permissionCodesFor(
     adminUserId: string,
+    tx: Prisma.TransactionClient = prisma,
   ): Promise<{ roles: string[]; permissions: string[] }> {
-    const assignments = await prisma.adminUserRole.findMany({
+    const assignments = await tx.adminUserRole.findMany({
       where: { adminUserId },
       include: { role: { include: withPermissions } },
     });
@@ -123,19 +124,52 @@ export const roleRepository = {
     adminUserId: string,
     roleId: string,
     assignedById: string | null,
+    tx: Prisma.TransactionClient = prisma,
   ): Promise<AdminUserRole> {
-    return prisma.adminUserRole.upsert({
+    return tx.adminUserRole.upsert({
       where: { adminUserId_roleId: { adminUserId, roleId } },
       update: { assignedById },
       create: { adminUserId, roleId, assignedById },
     });
   },
 
-  async revokeRolesExcept(adminUserId: string, keepRoleIds: string[]): Promise<number> {
-    const result = await prisma.adminUserRole.deleteMany({
+  async revokeRolesExcept(
+    adminUserId: string,
+    keepRoleIds: string[],
+    tx: Prisma.TransactionClient = prisma,
+  ): Promise<number> {
+    const result = await tx.adminUserRole.deleteMany({
       where: { adminUserId, roleId: { notIn: keepRoleIds } },
     });
     return result.count;
+  },
+
+  /**
+   * Runs `work` in one transaction that first takes a row lock on the role, so every decision of
+   * the form "how many holders would remain" is serialised. Without it two requests that each
+   * remove a different holder both count "one other remains" and both proceed.
+   */
+  withRoleLock<T>(code: string, work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Role WHERE code = ${code} FOR UPDATE`;
+      return work(tx);
+    });
+  },
+
+  /** Holders who can actually sign in: ACTIVE and not soft-deleted. */
+  countActiveHolders(
+    code: string,
+    excludeAdminUserId: string,
+    tx: Prisma.TransactionClient = prisma,
+  ): Promise<number> {
+    return tx.adminUser.count({
+      where: {
+        id: { not: excludeAdminUserId },
+        status: 'ACTIVE',
+        deletedAt: null,
+        roles: { some: { role: { code } } },
+      },
+    });
   },
 
   adminUserIdsWithRole(roleId: string): Promise<{ adminUserId: string }[]> {

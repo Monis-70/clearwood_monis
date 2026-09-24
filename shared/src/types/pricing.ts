@@ -137,6 +137,8 @@ export interface PricingCustomerGroup {
   name: string;
   priority: number;
   discountBp: number | null;
+  /** The group every anonymous and ungrouped shopper is priced under. */
+  isDefault?: boolean;
 }
 
 export interface PricingTaxClass {

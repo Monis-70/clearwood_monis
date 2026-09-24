@@ -13,9 +13,9 @@ export const healthController = {
   async ready(_req: Request, res: Response): Promise<void> {
     const report = await healthService.getReadiness();
 
-    if (report.status !== 'ready') {
+    if (report.status === 'unavailable') {
       // 503 still carries the per-dependency detail so an operator can see what is down.
-      throw AppError.serviceUnavailable('One or more dependencies are unavailable', report);
+      throw AppError.serviceUnavailable('The database is unavailable', report);
     }
 
     ok(res, report);

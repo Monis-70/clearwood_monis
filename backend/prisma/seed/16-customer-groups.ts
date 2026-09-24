@@ -41,18 +41,22 @@ export async function seedCustomerGroups(): Promise<void> {
   let created = 0;
 
   for (const group of GROUPS) {
-    const existing = await prisma.customerGroup.findFirst({ where: { code: group.code } });
+    // CREATE-ONLY (deleted rows included): which group is the default, its priority and whether it
+    // exists at all are pricing decisions the admin owns once the group is there. The listing
+    // index is priced for the default group, so a re-seed flipping it would reprice the storefront.
+    const existing = await prisma.customerGroup.findFirst({
+      where: { code: group.code },
+      select: { id: true },
+    });
+    if (existing) continue;
 
-    if (existing) {
-      // Structure stays in sync; the admin-editable name and discount are written once.
-      await prisma.customerGroup.update({
-        where: { id: existing.id },
-        data: { isDefault: group.isDefault, priority: group.priority, deletedAt: null },
-      });
-      continue;
-    }
+    const defaultTaken =
+      group.isDefault &&
+      (await prisma.customerGroup.count({ where: { isDefault: true, deletedAt: null } })) > 0;
 
-    await prisma.customerGroup.create({ data: { ...group, discountBp: group.discountBp } });
+    await prisma.customerGroup.create({
+      data: { ...group, discountBp: group.discountBp, isDefault: group.isDefault && !defaultTaken },
+    });
     created += 1;
   }
 

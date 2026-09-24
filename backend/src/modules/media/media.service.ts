@@ -29,8 +29,10 @@ import {
   type MediaWithDetail,
   type MediaWithVariants,
 } from '../../repositories/media.repository';
+import { productMediaRepository } from '../../repositories/productMedia.repository';
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
+import { catalogCacheService } from '../catalog-admin/catalogCache.service';
 
 import { imageProcessor, supportsRenditions } from './image.processor';
 import { mediaFolderService } from './mediaFolder.service';
@@ -38,6 +40,12 @@ import { mediaUsageService } from './media-usage.service';
 import { validateUpload } from './upload.validator';
 
 const tagsColumn = jsonColumn<string[]>(undefined, 'Media.tagsJson');
+
+async function invalidateUsersOf(mediaIds: string[]): Promise<void> {
+  await catalogCacheService.invalidateMedia(
+    await productMediaRepository.productSlugsForMedia(mediaIds),
+  );
+}
 
 export interface UploadInput {
   buffer: Buffer;
@@ -310,6 +318,7 @@ export const mediaService = {
       ...(input.folderId === null ? { folderId: null } : {}),
     });
 
+    await invalidateUsersOf([id]);
     return toMediaDto(updated, folder?.path ?? null);
   },
 
@@ -343,6 +352,8 @@ export const mediaService = {
     });
 
     await storage.deleteMany(oldKeys.filter((key) => !key.startsWith('pending/')));
+    // Cached payloads still point at the storage keys just deleted.
+    await invalidateUsersOf([id]);
 
     const media = await mediaRepository.findById(id);
     return toMediaDto(media!);
@@ -363,6 +374,7 @@ export const mediaService = {
       fileName: existing.originalName,
       folderPath: existing.folder,
     });
+    await invalidateUsersOf([id]);
 
     const media = await mediaRepository.findById(id);
     return toMediaDto(media!);
@@ -372,6 +384,7 @@ export const mediaService = {
     const existing = await mediaRepository.findById(id, true);
     if (!existing) throw AppError.notFound('Media not found', { id });
     await mediaRepository.softDelete(id);
+    await invalidateUsersOf([id]);
   },
 
   async restore(id: string): Promise<MediaAssetDto> {
@@ -379,6 +392,7 @@ export const mediaService = {
     if (!existing) throw AppError.notFound('Media not found', { id });
 
     const restored = await mediaRepository.restore(id);
+    await invalidateUsersOf([id]);
     return toMediaDto((await mediaRepository.findById(restored.id))!);
   },
 
@@ -398,6 +412,8 @@ export const mediaService = {
       });
     }
 
+    // Read first: a forced detach and the delete cascade both remove the rows naming the users.
+    const productSlugs = await productMediaRepository.productSlugsForMedia([id]);
     const detachedUsages = usages.length > 0 ? await mediaUsageService.detachMedia(id) : 0;
     const keys = [existing.path, ...existing.variants.map((variant) => variant.path)];
     const filesDeleted = await storage.deleteMany(
@@ -405,18 +421,20 @@ export const mediaService = {
     );
 
     await mediaRepository.hardDelete(id);
+    await catalogCacheService.invalidateMedia(productSlugs);
     return { detachedUsages, filesDeleted };
   },
 
   async bulkSoftDelete(ids: string[]): Promise<number> {
-    let deleted = 0;
+    const deletedIds: string[] = [];
     for (const id of ids) {
       const existing = await mediaRepository.findById(id, true);
       if (!existing) continue;
       await mediaRepository.softDelete(id);
-      deleted += 1;
+      deletedIds.push(id);
     }
-    return deleted;
+    if (deletedIds.length > 0) await invalidateUsersOf(deletedIds);
+    return deletedIds.length;
   },
 
   /**

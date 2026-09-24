@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import type { SearchEntityType } from '@shared/enums';
 
 import { env } from '../../config/env';
-import { logger } from '../../config/logger';
 import { search } from '../../container';
 import type { SearchDocumentInput } from '../../drivers/search';
 import { DEFAULT_LOCALE } from '../../drivers/search';
@@ -13,19 +12,23 @@ import {
   storefrontRepository,
   type ProductForIndex,
 } from '../../repositories/storefront.repository';
+import { categoryService } from '../../services/category.service';
+import { isVariantAvailable } from '../catalog-admin/availability';
 import { toPlainText } from '../cms/htmlSanitizer';
-import { pricingFacade } from '../pricing/pricing.facade';
+
+import { listingIndexService, type PriceRange } from './listingIndex.service';
+import { isFeaturedAt } from './merchandising';
 
 /**
  * Builds the denormalised SearchDocument for every indexable entity.
  *
- * PRICE RULE — the indexed `minPricePaise`/`maxPricePaise` are produced by calling the Prompt 6
- * pricing facade once per variant for the DEFAULT customer group (no customer, no coupon, no
- * pincode). There is deliberately no pricing arithmetic in this file: the index must agree with
- * `/pricing/quote` by construction, not by a second implementation that drifts.
+ * PRICE RULE - the indexed `minPricePaise`/`maxPricePaise` are copied from the catalog's listing
+ * index (listingIndex.service), which resolves them through the Prompt 6 pricing facade for the
+ * DEFAULT customer group. There is no pricing arithmetic in this file, and prices are computed
+ * once per product change for the listing and the search document together.
  */
 
-const PRICE_CONCURRENCY = 4;
+const NO_PRICE: PriceRange = { minPricePaise: null, maxPricePaise: null };
 
 function hash(payload: Omit<SearchDocumentInput, 'checksum'>): string {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 32);
@@ -91,10 +94,10 @@ function collapse(...parts: (string | null | undefined)[]): string {
 }
 
 /** Ancestors included: a product in "Fabric Sofas" must be findable by searching "sofas". */
-function categoryText(product: ProductForIndex): string {
+function categoryText(links: ProductForIndex['categories']): string {
   const parts = new Set<string>();
 
-  for (const link of product.categories) {
+  for (const link of links) {
     parts.add(link.category.name);
     for (const slug of link.category.path.split('/')) {
       if (slug) parts.add(slug.replace(/-/g, ' '));
@@ -121,24 +124,8 @@ function stockRollup(product: ProductForIndex): boolean {
   if (product.isMadeToOrder) return true;
 
   return product.variants.some(
-    (variant) =>
-      variant.isActive &&
-      (variant.allowBackorder || Math.max(variant.stockQty - variant.reservedQty, 0) > 0),
+    (variant) => variant.isActive && isVariantAvailable(variant, product),
   );
-}
-
-async function inChunks<T, R>(
-  items: T[],
-  size: number,
-  run: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-
-  for (let index = 0; index < items.length; index += size) {
-    const slice = items.slice(index, index + size);
-    results.push(...(await Promise.all(slice.map(run))));
-  }
-  return results;
 }
 
 export interface ReindexOutcome {
@@ -150,48 +137,14 @@ export interface ReindexOutcome {
 }
 
 export const searchIndexerService = {
-  /**
-   * The DEFAULT customer group's price range, straight from the pricing engine.
-   *
-   * One quote per sellable variant at qty 1. Variants share a cached pricing context, so this is
-   * cheap; correctness matters more than shaving a query here, because this number is what the
-   * price filter and the price sort run against.
-   */
-  async priceRange(
+  async buildProductDocument(
     product: ProductForIndex,
-  ): Promise<{ minPricePaise: number | null; maxPricePaise: number | null }> {
-    const variants = product.variants.filter((variant) => variant.isActive);
-    const targets = variants.length > 0 ? variants.map((variant) => variant.id) : [null];
-
-    const prices = await inChunks(targets, PRICE_CONCURRENCY, async (variantId) => {
-      try {
-        const breakdown = await pricingFacade.quoteProduct({
-          items: [{ productId: product.id, variantId, qty: 1 }],
-          channel: 'WEB',
-          customerId: null,
-          customerGroupId: null,
-        });
-        return breakdown.lines[0]?.unitPricePaise ?? null;
-      } catch (error) {
-        logger.warn(
-          { err: error, productId: product.id, variantId },
-          'price index skipped a variant',
-        );
-        return null;
-      }
-    });
-
-    const resolved = prices.filter((price): price is number => price !== null);
-    if (resolved.length === 0) return { minPricePaise: null, maxPricePaise: null };
-
-    return {
-      minPricePaise: Math.min(...resolved),
-      maxPricePaise: Math.max(...resolved),
-    };
-  },
-
-  async buildProductDocument(product: ProductForIndex): Promise<SearchDocumentInput> {
-    const { minPricePaise, maxPricePaise } = await this.priceRange(product);
+    prices: PriceRange = NO_PRICE,
+    live?: Set<string>,
+  ): Promise<SearchDocumentInput> {
+    const { minPricePaise, maxPricePaise } = prices;
+    // A hidden category must not keep making its products findable under its name.
+    const liveCategories = live ?? (await categoryService.liveIds());
 
     const payload: Omit<SearchDocumentInput, 'checksum'> = {
       entityType: 'PRODUCT',
@@ -205,7 +158,9 @@ export const searchIndexerService = {
         ...product.variants.map((variant) => variant.sku),
       ),
       brandText: product.brand?.name ?? null,
-      categoryText: categoryText(product),
+      categoryText: categoryText(
+        product.categories.filter((link) => liveCategories.has(link.categoryId)),
+      ),
       attributeText: attributeText(product),
       sku: product.sku,
       slug: product.slug,
@@ -215,13 +170,24 @@ export const searchIndexerService = {
       inStock: stockRollup(product),
       isActive: true,
       popularityScore: product.soldCount,
-      boostScore: (product.isFeatured ? 10 : 0) + (product.isBestSeller ? 5 : 0),
+      // `featuredUntil` in the past: no longer featured. The reconciler reindexes at the boundary.
+      boostScore: (isFeaturedAt(product, new Date()) ? 10 : 0) + (product.isBestSeller ? 5 : 0),
     };
 
     return { ...payload, checksum: hash(payload) };
   },
 
-  async indexProduct(productId: string): Promise<boolean> {
+  /**
+   * `reprice: false` when nothing price-relevant moved (stock, sales counts): the listing index
+   * row is reused instead of quoting every variant again.
+   */
+  async indexProduct(productId: string, options: { reprice?: boolean } = {}): Promise<boolean> {
+    const reuse =
+      options.reprice === false
+        ? (await listingIndexService.read([productId])).get(productId)
+        : null;
+    const prices = reuse ?? (await listingIndexService.refresh(productId)) ?? NO_PRICE;
+
     const product = await storefrontRepository.findIndexableById(productId);
 
     // Unpublished, archived or soft-deleted: the document must disappear, not go stale.
@@ -230,15 +196,43 @@ export const searchIndexerService = {
       return true;
     }
 
-    return search.indexOne(await this.buildProductDocument(product));
+    return search.indexOne(await this.buildProductDocument(product, prices));
   },
 
   async removeProduct(productId: string): Promise<void> {
     await search.remove('PRODUCT', productId);
   },
 
+  /**
+   * Documents for many products at once, from the prices already in the listing index (the caller
+   * refreshed them): one read per batch instead of two queries a product.
+   */
+  async indexProducts(productIds: string[]): Promise<number> {
+    let written = 0;
+    for (let index = 0; index < productIds.length; index += env.SEARCH_INDEX_BATCH) {
+      const ids = productIds.slice(index, index + env.SEARCH_INDEX_BATCH);
+      const [products, prices, live] = await Promise.all([
+        storefrontRepository.findIndexableByIds(ids),
+        listingIndexService.read(ids),
+        categoryService.liveIds(),
+      ]);
+
+      const indexable = new Set(products.map((product) => product.id));
+      for (const id of ids) if (!indexable.has(id)) await search.remove('PRODUCT', id);
+
+      const documents = await Promise.all(
+        products.map((product) => this.buildProductDocument(product, prices.get(product.id), live)),
+      );
+      written += await search.indexMany(documents);
+    }
+    return written;
+  },
+
   async indexCategories(): Promise<number> {
-    const categories = await storefrontRepository.findIndexableCategories();
+    const live = await categoryService.liveIds();
+    const categories = (await storefrontRepository.findIndexableCategories()).filter((category) =>
+      live.has(category.id),
+    );
 
     const documents = categories.map((category) => {
       const payload: Omit<SearchDocumentInput, 'checksum'> = {
@@ -264,7 +258,12 @@ export const searchIndexerService = {
       return { ...payload, checksum: hash(payload) };
     });
 
-    return search.indexMany(documents);
+    const written = await search.indexMany(documents);
+    await this.pruneEntities(
+      'CATEGORY',
+      categories.map((category) => category.id),
+    );
+    return written;
   },
 
   async indexCollections(): Promise<number> {
@@ -294,7 +293,12 @@ export const searchIndexerService = {
       return { ...payload, checksum: hash(payload) };
     });
 
-    return search.indexMany(documents);
+    const written = await search.indexMany(documents);
+    await this.pruneEntities(
+      'COLLECTION',
+      collections.map((collection) => collection.id),
+    );
+    return written;
   },
 
   async indexBrands(): Promise<number> {
@@ -324,7 +328,25 @@ export const searchIndexerService = {
       return { ...payload, checksum: hash(payload) };
     });
 
-    return search.indexMany(documents);
+    const written = await search.indexMany(documents);
+    await this.pruneEntities(
+      'BRAND',
+      brands.map((brand) => brand.id),
+    );
+    return written;
+  },
+
+  /** Removes the documents of one entity family that are no longer in `liveIds`. */
+  async pruneEntities(
+    entityType: 'CATEGORY' | 'COLLECTION' | 'BRAND',
+    liveIds: string[],
+  ): Promise<number> {
+    const live = new Set(liveIds);
+    const stale = (await searchDocumentRepository.listEntityIds(entityType)).filter(
+      (id) => !live.has(id),
+    );
+    for (const id of stale) await search.remove(entityType, id);
+    return stale.length;
   },
 
   /** Chunked and resumable: a failure mid-run leaves every earlier chunk correctly indexed. */
@@ -430,6 +452,8 @@ export const searchIndexerService = {
   async reindexAll(
     entityType?: SearchEntityType,
     onProgress?: (processed: number, total: number) => Promise<void>,
+    /** Called between batches of both phases; the leased reconciler renews its lease here. */
+    keepAlive?: () => Promise<void>,
   ): Promise<ReindexOutcome> {
     const outcome: ReindexOutcome = {
       total: 0,
@@ -453,6 +477,9 @@ export const searchIndexerService = {
 
     if (entityType && entityType !== 'PRODUCT') return outcome;
 
+    // Prices first, once, into the catalog's own index; the documents below copy them.
+    await listingIndexService.rebuildAll(keepAlive);
+
     outcome.total = await storefrontRepository.countIndexable();
 
     let afterId: string | null = null;
@@ -463,10 +490,12 @@ export const searchIndexerService = {
       );
       if (batch.length === 0) break;
 
+      const prices = await listingIndexService.read(batch.map((product) => product.id));
+      const live = await categoryService.liveIds();
       const documents: SearchDocumentInput[] = [];
       for (const product of batch) {
         try {
-          documents.push(await this.buildProductDocument(product));
+          documents.push(await this.buildProductDocument(product, prices.get(product.id), live));
         } catch (error) {
           outcome.failed += 1;
           outcome.errors.push(
@@ -480,6 +509,7 @@ export const searchIndexerService = {
       afterId = batch[batch.length - 1]!.id;
 
       if (onProgress) await onProgress(outcome.processed, outcome.total);
+      if (keepAlive) await keepAlive();
     }
 
     /* Anything indexed but no longer publishable has to go. */

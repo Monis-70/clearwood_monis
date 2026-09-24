@@ -2,6 +2,8 @@ import type { Prisma, SearchIndexJob, SearchQueryLog } from '@prisma/client';
 
 import { prisma } from '../config/prisma';
 
+import { liveCollectionWhere } from './storefront.repository';
+
 /** R1 — Prisma access for the Prompt 7 analytics, popularity and reindex jobs. */
 
 export const searchAnalyticsRepository = {
@@ -230,7 +232,15 @@ export const resolveRepository = {
   findProductBySlug(slug: string) {
     return prisma.product.findFirst({
       where: { slug, deletedAt: null },
-      select: { id: true, slug: true, name: true, status: true, visibility: true },
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        status: true,
+        visibility: true,
+        deletedAt: true,
+        publishedAt: true,
+      },
     });
   },
 
@@ -243,30 +253,31 @@ export const resolveRepository = {
 
   findCollectionBySlug(slug: string) {
     return prisma.collection.findFirst({
-      where: { slug, deletedAt: null, isActive: true },
+      where: { slug, ...liveCollectionWhere() },
       select: { id: true, slug: true, name: true },
     });
   },
 };
 
 export const searchEntityRepository = {
+  /** The index may lag a deactivation by one event; the result never does. */
   findCategoriesByIds(ids: string[]) {
     return prisma.category.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: ids }, deletedAt: null, isActive: true },
       select: { id: true, slug: true, name: true, path: true },
     });
   },
 
   findCollectionsByIds(ids: string[]) {
     return prisma.collection.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: ids }, ...liveCollectionWhere() },
       select: { id: true, slug: true, name: true },
     });
   },
 
   findBrandsByIds(ids: string[]) {
     return prisma.brand.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: ids }, deletedAt: null, isActive: true },
       select: { id: true, slug: true, name: true },
     });
   },

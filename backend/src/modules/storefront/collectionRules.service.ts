@@ -7,10 +7,12 @@ import type { CollectionEvaluationDto } from '@shared/types/storefront';
 
 import { logger } from '../../config/logger';
 import { catalogEvents } from '../../events/catalogEvents';
-import { publishedWhere, storefrontRepository } from '../../repositories/storefront.repository';
+import { browsableWhere, storefrontRepository } from '../../repositories/storefront.repository';
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { catalogCacheService } from '../catalog-admin/catalogCache.service';
+
+import { loadMerchandising } from './merchandising';
 
 /**
  * Evaluates AUTOMATIC collections.
@@ -99,12 +101,53 @@ function scalarCondition(
   }
 }
 
-function compileRule(rule: {
-  field: CollectionRuleField;
-  operator: CollectionRuleOperator;
-  value: RuleValue;
-}): Prisma.ProductWhereInput {
+/** When a rule is judged: "new arrival" and "featured" depend on the clock and a setting. */
+export interface RuleContext {
+  now: Date;
+  newArrivalSince: Date | null;
+}
+
+/** The same judgement as merchandising.ts and the listing SQL (listing.repository). */
+function effectiveFact(
+  field: 'isNewArrival' | 'isFeatured',
+  context: RuleContext,
+): Prisma.ProductWhereInput {
+  if (field === 'isFeatured') {
+    return {
+      isFeatured: true,
+      OR: [{ featuredUntil: null }, { featuredUntil: { gt: context.now } }],
+    };
+  }
+
+  const since = context.newArrivalSince;
+  if (!since) return { isNewArrival: true };
+  return {
+    OR: [
+      { isNewArrival: true },
+      { publishedAt: { gte: since } },
+      { publishedAt: null, createdAt: { gte: since } },
+    ],
+  };
+}
+
+function compileRule(
+  rule: {
+    field: CollectionRuleField;
+    operator: CollectionRuleOperator;
+    value: RuleValue;
+  },
+  context: RuleContext,
+): Prisma.ProductWhereInput {
   const { field, operator, value } = rule;
+
+  if (
+    (field === 'isNewArrival' || field === 'isFeatured') &&
+    (operator === 'EQUALS' || operator === 'NOT_EQUALS') &&
+    typeof value === 'boolean'
+  ) {
+    const fact = effectiveFact(field, context);
+    return value === (operator === 'EQUALS') ? fact : { NOT: fact };
+  }
 
   const column = DIRECT_COLUMNS[field];
   if (column) {
@@ -163,15 +206,19 @@ function compileRule(rule: {
   }
 }
 
-export function compileRules(rules: CollectionRules): Prisma.ProductWhereInput {
+export function compileRules(
+  rules: CollectionRules,
+  context: RuleContext,
+): Prisma.ProductWhereInput {
   const groups = rules.groups.map((group) => {
-    const clauses = group.rules.map(compileRule);
+    const clauses = group.rules.map((rule) => compileRule(rule, context));
     return group.match === 'ANY' ? { OR: clauses } : { AND: clauses };
   });
 
+  // AND, not a spread: both sides carry an `OR`, and a spread let an ANY rule replace the
+  // publishedAt clause, which put scheduled products into automatic collections.
   return {
-    ...publishedWhere(),
-    ...(rules.match === 'ANY' ? { OR: groups } : { AND: groups }),
+    AND: [browsableWhere(context.now), rules.match === 'ANY' ? { OR: groups } : { AND: groups }],
   };
 }
 
@@ -196,7 +243,7 @@ export const collectionRulesService = {
     rules: CollectionRules,
     sampleSize: number,
   ): Promise<{ matched: number; sample: { id: string; sku: string; name: string }[] }> {
-    const where = compileRules(rules);
+    const where = compileRules(rules, await loadMerchandising());
 
     const [matched, sample] = await Promise.all([
       storefrontRepository.countMatching(where),
@@ -210,9 +257,13 @@ export const collectionRulesService = {
    * Materialises CollectionProduct rows for one AUTOMATIC collection.
    *
    * Manual position overrides survive: a product that is still matched keeps the position it had.
-   * MANUAL collections are never touched.
+   * MANUAL collections are never touched. `quiet` (the reconciler's periodic pass): caches and
+   * listeners only hear about it when the membership actually changed.
    */
-  async evaluate(collectionId: string): Promise<CollectionEvaluationDto> {
+  async evaluate(
+    collectionId: string,
+    options: { quiet?: boolean } = {},
+  ): Promise<CollectionEvaluationDto> {
     const collection = await storefrontRepository.findCollectionById(collectionId);
     if (!collection) throw AppError.notFound('Collection not found', { collectionId });
 
@@ -233,7 +284,10 @@ export const collectionRulesService = {
       );
     }
 
-    const matchedIds = await storefrontRepository.findMatchingIds(compileRules(rules), rules.limit);
+    const matchedIds = await storefrontRepository.findMatchingIds(
+      compileRules(rules, await loadMerchandising()),
+      rules.limit,
+    );
     const evaluatedAt = new Date();
     const outcome = await storefrontRepository.syncCollectionMembers(
       collectionId,
@@ -241,8 +295,10 @@ export const collectionRulesService = {
       evaluatedAt,
     );
 
-    await catalogCacheService.invalidateCollection();
-    catalogEvents.emit('collection.changed', { collectionId, reason: 'evaluated' });
+    if (!options.quiet || outcome.added > 0 || outcome.removed > 0) {
+      await catalogCacheService.invalidateCollection();
+      catalogEvents.emit('collection.changed', { collectionId, reason: 'evaluated' });
+    }
 
     return {
       collectionId,

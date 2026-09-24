@@ -6,6 +6,9 @@
 @slug = kabir-3-seater-fabric-sofa
 
 ### ------------------------------------------------------------ public API
+### (Prompt 5) Public quotes price reachable products only: a draft, hidden, scheduled or deleted
+### product answers 404. A signed-in member of a group with `discountBp` sees it applied once, as
+### a CUSTOMER_GROUP component after every rule (engineVersion 2).
 
 ### 1. Product price, single unit, no context
 GET {{api}}/catalog/products/{{slug}}/price

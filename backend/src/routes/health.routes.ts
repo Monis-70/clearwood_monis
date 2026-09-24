@@ -29,7 +29,10 @@ const dependencySchema = z.object({
 const readinessSchema = registry.register(
   'Readiness',
   z.object({
-    status: z.enum(['ready', 'degraded']),
+    status: z.enum(['ready', 'degraded', 'unavailable']).openapi({
+      description:
+        '`degraded`: the cache is down and reads are served from the database; still in rotation.',
+    }),
     timestamp: z.string().datetime(),
     dependencies: z.object({ database: dependencySchema, cache: dependencySchema }),
   }),
@@ -53,9 +56,13 @@ registry.registerPath({
   tags: ['System'],
   summary: 'Readiness probe',
   description:
-    'Checks the database (SELECT 1) and the cache. Returns 503 when a dependency is down.',
+    'Checks the database (SELECT 1) and the cache. Returns 503 only when the database is down: ' +
+    'a cache outage answers 200 with `status: degraded`, because every read falls back to MySQL.',
   responses: {
-    200: jsonContent(successBodySchema(readinessSchema), 'Every dependency answered'),
+    200: jsonContent(
+      successBodySchema(readinessSchema),
+      'The database answered (cache up or degraded)',
+    ),
     503: jsonContent(
       z.object({
         success: z.literal(false),
@@ -66,7 +73,7 @@ registry.registerPath({
           traceId: z.string().uuid(),
         }),
       }),
-      'At least one dependency is down — `error.details` carries the per-dependency status',
+      'The database is down — `error.details` carries the per-dependency status',
     ),
     ...commonErrorResponses,
   },

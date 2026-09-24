@@ -9,8 +9,8 @@ generator client {
 // D4 is RETIRED: every String column declares an explicit @db type, enforced by
 // tests/schema-types.test.ts. A bare String becomes VARCHAR(191) on MySQL and truncates silently.
 datasource db {
-  provider = "mysql"
-  url      = env("DATABASE_URL")
+  provider          = "mysql"
+  url               = env("DATABASE_URL")
   // The app user cannot create databases, so migrate dev needs a pre-created empty one.
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
@@ -230,6 +230,9 @@ model Category {
   showInMenu          Boolean   @default(true)
   menuColumn          Int?
   isFeatured          Boolean   @default(false)
+  /// The enquiry form this category offers (contract work, interiors); null = none. Same keys as
+  /// NavigationItem.leadFormKey, so one form can be reached from the menu and from a category.
+  leadFormKey         String?   @db.VarChar(64)
   shortDescription    String?   @db.Text
   description         String?   @db.Text
   iconMediaId         String?   @db.VarChar(64)
@@ -299,6 +302,7 @@ model Attribute {
   categories    CategoryAttribute[]
   productValues ProductAttributeValue[]
   variantValues VariantAttributeValue[]
+  listingValues ProductListingAttribute[]
 
   @@index([groupId, position])
   @@index([isFilterable])
@@ -309,6 +313,8 @@ model AttributeValue {
   attributeId   String    @db.VarChar(64)
   code          String    @db.VarChar(191)
   label         String    @db.VarChar(255)
+  /// Customer-facing explanation of the option ("Velvet - soft, stain resistant").
+  description   String?   @db.VarChar(1000)
   position      Int       @default(0)
   colorHex      String?   @db.VarChar(16)
   swatchMediaId String?   @db.VarChar(64)
@@ -324,6 +330,7 @@ model AttributeValue {
 
   productValues ProductAttributeValue[]
   variantValues VariantAttributeValue[]
+  listingValues ProductListingAttribute[]
   productMedia  ProductMedia[]
 
   @@unique([attributeId, code])
@@ -382,9 +389,14 @@ model Product {
   heightMm            Int?
   seatHeightMm        Int?
   isFeatured          Boolean   @default(false)
+  /// Featured until this moment; null = until an admin clears `isFeatured`.
+  featuredUntil       DateTime?
   isNewArrival        Boolean   @default(false)
   isSpecialCollection Boolean   @default(false)
   isBestSeller        Boolean   @default(false)
+  /// An admin-written merchandising badge ("Exclusive"); the words are data, never code.
+  badgeText           String?   @db.VarChar(64)
+  badgeColor          String?   @db.VarChar(16)
   minOrderQty         Int       @default(1)
   maxOrderQty         Int?
   ratingAvgBp         Int       @default(0)
@@ -403,6 +415,8 @@ model Product {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
   deletedAt           DateTime?
+  /// The slug a soft-deleted product gave up (its `slug` becomes `deleted-{id}`); restore reclaims it.
+  deletedSlug         String?   @db.VarChar(191)
 
   brand    Brand?    @relation(fields: [brandId], references: [id])
   taxClass TaxClass? @relation(fields: [taxClassId], references: [id])
@@ -412,31 +426,37 @@ model Product {
   variants        ProductVariant[]
   media           ProductMedia[]
   collections     CollectionProduct[]
-  relations       ProductRelation[]       @relation("ProductRelationSource")
-  relatedBy       ProductRelation[]       @relation("ProductRelationTarget")
+  relations       ProductRelation[]         @relation("ProductRelationSource")
+  relatedBy       ProductRelation[]         @relation("ProductRelationTarget")
   stat            ProductStat?
+  listingIndex    ProductListingIndex?
+  listingValues   ProductListingAttribute[]
 
   @@index([status, publishedAt])
   @@index([isNewArrival])
   @@index([isFeatured])
+  @@index([featuredUntil])
   @@index([basePricePaise])
   @@index([completenessScore])
 }
 
-/// A product belongs to MANY categories ("All Sofas" + "Fabric" + "New Arrivals").
+/// A product belongs to MANY categories ("All Sofas" + "Fabric" + "New Arrivals"), at most one primary.
 model ProductCategory {
-  id         String   @id @default(cuid()) @db.VarChar(64)
-  productId  String   @db.VarChar(64)
-  categoryId String   @db.VarChar(64)
-  isPrimary  Boolean  @default(false)
-  position   Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id          String   @id @default(cuid()) @db.VarChar(64)
+  productId   String   @db.VarChar(64)
+  categoryId  String   @db.VarChar(64)
+  isPrimary   Boolean  @default(false)
+  /// `true` iff isPrimary, otherwise NULL (never false) - a CHECK in the migration keeps them equal.
+  primaryMark Boolean?
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   @@unique([productId, categoryId])
+  @@unique([productId, primaryMark])
   @@index([categoryId, position])
 }
 
@@ -474,6 +494,10 @@ model ProductVariant {
   barcode             String?   @db.VarChar(64)
   position            Int       @default(0)
   isDefault           Boolean   @default(false)
+  /// `true` iff isDefault, otherwise NULL (never false) - a CHECK in the migration keeps them equal.
+  defaultMark         Boolean?
+  /// SHA-256 of the sorted (attribute, value) pairs - variantOptions.ts. NULL: no options, or deleted.
+  combinationKey      String?   @db.Char(64)
   isActive            Boolean   @default(true)
   stockQty            Int       @default(0)
   reservedQty         Int       @default(0)
@@ -498,6 +522,8 @@ model ProductVariant {
   media           ProductMedia[]
   ledger          InventoryLedger[]
 
+  @@unique([productId, defaultMark])
+  @@unique([productId, combinationKey])
   @@index([productId, position])
 }
 
@@ -523,6 +549,8 @@ model ProductMedia {
   productId        String   @db.VarChar(64)
   mediaId          String   @db.VarChar(64)
   role             String   @default("GALLERY") @db.VarChar(64)
+  /// `true` iff role = PRIMARY, otherwise NULL (never false) - a CHECK in the migration enforces it.
+  primaryMark      Boolean?
   position         Int      @default(0)
   altText          String?  @db.VarChar(1000)
   deviceTarget     String   @default("ALL") @db.VarChar(64)
@@ -536,6 +564,7 @@ model ProductMedia {
   attributeValue AttributeValue? @relation(fields: [attributeValueId], references: [id])
   variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
 
+  @@unique([productId, primaryMark])
   @@index([productId, position])
   @@index([productId, attributeValueId])
 }
@@ -587,6 +616,8 @@ model Collection {
   type                String    @default("MANUAL") @db.VarChar(64)
   description         String?   @db.Text
   rulesJson           String?   @db.LongText
+  /// The tile image a landing or menu shows for the collection; the banner is its page header.
+  imageMediaId        String?   @db.VarChar(64)
   bannerMediaId       String?   @db.VarChar(64)
   mobileBannerMediaId String?   @db.VarChar(64)
   isActive            Boolean   @default(true)
@@ -708,6 +739,44 @@ model ImportJob {
 
   @@index([entity, status])
   @@index([createdAt])
+}
+
+/// A customer asking for what the catalog does not sell off the shelf: contract and custom
+/// furniture, interiors, bulk orders. Never an order - nothing here is priced, reserved or paid.
+/// `formKey` names the form it came from (a LEAD_FORM navigation item or a category's
+/// `leadFormKey`); `categoryId`/`productId` are the context it was sent from, plain ids so a
+/// deleted category never deletes a customer's request. `detailsJson` holds extra answers (D3).
+model Enquiry {
+  id           String    @id @default(cuid()) @db.VarChar(64)
+  formKey      String    @db.VarChar(64)
+  status       String    @default("NEW") @db.VarChar(64)
+  name         String    @db.VarChar(255)
+  email        String?   @db.VarChar(191)
+  phone        String?   @db.VarChar(32)
+  pincode      String?   @db.VarChar(16)
+  city         String?   @db.VarChar(120)
+  companyName  String?   @db.VarChar(255)
+  message      String?   @db.Text
+  quantity     Int?
+  budgetPaise  Int?
+  categoryId   String?   @db.VarChar(64)
+  productId    String?   @db.VarChar(64)
+  customerId   String?   @db.VarChar(64)
+  assignedToId String?   @db.VarChar(64)
+  source       String    @default("WEB") @db.VarChar(64)
+  detailsJson  String?   @db.LongText
+  adminNote    String?   @db.Text
+  ip           String?   @db.VarChar(45)
+  userAgent    String?   @db.VarChar(512)
+  version      Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  @@index([status, createdAt])
+  @@index([formKey, createdAt])
+  @@index([categoryId])
+  @@index([assignedToId, status])
 }
 
 /// Replay protection for mutations that would otherwise duplicate work (create, duplicate,
@@ -1329,6 +1398,63 @@ model ProductStat {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@index([popularityScore])
+}
+
+/// Prompt 4 - the price storefront listings filter and sort on: the DEFAULT customer group's range
+/// at qty 1, from the pricing facade. Owned by the catalog (not the search driver); displayed prices
+/// are always quoted live.
+model ProductListingIndex {
+  id            String   @id @default(cuid()) @db.VarChar(64)
+  productId     String   @unique @db.VarChar(64)
+  /// NULL: no sellable variant could be priced.
+  minPricePaise Int?
+  maxPricePaise Int?
+  computedAt    DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+/// Prompt 5 - every attribute value a product answers to in a listing, once: its specs plus the
+/// option values of its active variants. Written with its ProductListingIndex row, under the same
+/// lock (listingIndex.service); the listing's attribute filters and facet counts read only this.
+/// MySQL's source rows stay authoritative: rebuildAll and the reconciler rewrite it from them.
+model ProductListingAttribute {
+  id               String   @id @default(cuid()) @db.VarChar(64)
+  productId        String   @db.VarChar(64)
+  attributeId      String   @db.VarChar(64)
+  attributeValueId String   @db.VarChar(64)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product        Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute      Attribute      @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  attributeValue AttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, attributeId, attributeValueId], map: "ProductListingAttribute_product_value_key")
+  @@index([attributeValueId, productId], map: "ProductListingAttribute_value_product_idx")
+  @@index([attributeId])
+}
+
+/// Prompt 5 - a periodic job that exactly one process may run at a time (listingReconciler).
+/// The lease is taken by a compare-and-set UPDATE and expires if its holder dies; `watermarkAt`
+/// is how far the job has processed; `rebuildRequestedAt` is a durable request any worker can
+/// raise, honoured once by whichever process holds the lease next.
+model MaintenanceTask {
+  id                 String    @id @default(cuid()) @db.VarChar(64)
+  name               String    @unique @db.VarChar(191)
+  leaseOwner         String?   @db.VarChar(191)
+  leaseExpiresAt     DateTime?
+  watermarkAt        DateTime?
+  rebuildRequestedAt DateTime?
+  lastRebuiltAt      DateTime?
+  lastStartedAt      DateTime?
+  lastCompletedAt    DateTime?
+  lastError          String?   @db.VarChar(1000)
+  runCount           Int       @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 }
 
 /// Reindexing runs synchronously in chunks today; the row exists so Prompt 17 can move it to a

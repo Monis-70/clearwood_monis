@@ -35,6 +35,29 @@ const STOREFRONT_SETTINGS: SeedSetting[] = [
     valueType: 'boolean',
     isPublic: true,
   },
+  // A product is a new arrival for this many days after it goes live (0: only the flag counts).
+  {
+    key: 'catalog.new_arrival_days',
+    value: '30',
+    group: 'catalog',
+    valueType: 'number',
+    isPublic: true,
+  },
+  // Which card badges show and their words. A code left out is never shown; IN_HOUSE,
+  // MADE_TO_ORDER and FEATURED are available but off until an admin adds them.
+  {
+    key: 'catalog.badges',
+    value: JSON.stringify({
+      NEW_ARRIVAL: { label: 'New', color: '#7E8C77' },
+      SALE: { label: 'Sale', color: '#B23B3B' },
+      BEST_SELLER: { label: 'Bestseller', color: '#8A5A3B' },
+      SPECIAL_COLLECTION: { label: 'Special Collection', color: '#B4613A' },
+      CUSTOMIZABLE: { label: 'Customisable', color: '#1E1A16' },
+    }),
+    group: 'catalog',
+    valueType: 'json',
+    isPublic: false,
+  },
   // popularityScore = views7d*w1 + cartAdds*w2 + purchases*w3 + wishlists*w4 + recency bonus.
   {
     key: 'search.popularity_weights',

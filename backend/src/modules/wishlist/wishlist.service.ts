@@ -19,6 +19,7 @@ import type { CartOwner } from '../cart/cartIdentity';
 import { cartService } from '../cart/cart.service';
 import { parseOptions } from '../cart/cartPricing.service';
 import { toProductCard } from '../storefront/card.mapper';
+import { loadMerchandising } from '../storefront/merchandising';
 import { productQueryService } from '../storefront/productQuery.service';
 
 /**
@@ -266,18 +267,23 @@ export const wishlistService = {
     if (ids.length === 0) return new Map<string, ReturnType<typeof toProductCard>>();
 
     const rows = await storefrontRepository.findCards(ids);
-    const [prices, indexed] = await Promise.all([
+    const [prices, indexed, merchandising] = await Promise.all([
       productQueryService.resolveDisplayPrices(rows, { customerId: null }),
       productQueryService.priceIndex(ids),
+      loadMerchandising(),
     ]);
 
     return new Map(
       rows.map((row) => [
         row.id,
-        toProductCard(row, {
-          pricePaise: prices.get(row.id) ?? row.basePricePaise,
-          indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
-        }),
+        toProductCard(
+          row,
+          {
+            pricePaise: prices.get(row.id) ?? row.basePricePaise,
+            indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
+          },
+          merchandising,
+        ),
       ]),
     );
   },

@@ -20,14 +20,20 @@ GET {{api}}/catalog/products?categorySlug=fabric-sofas&limit=24
 ### 3. Apply a colour filter — every OTHER facet's counts should update, colour's should not
 GET {{api}}/catalog/products?categorySlug=sofas&attributeValueIds={{colourValueId}}&limit=24
 
-### 4. Add a price window on top (uses the indexed DEFAULT-group price)
+### 4. Add a price window on top (uses the catalog listing index: DEFAULT-group price)
 GET {{api}}/catalog/products?categorySlug=sofas&attributeValueIds={{colourValueId}}&priceMin=2000000&priceMax=8000000
 
 ### 5. Sort by price, low to high
 GET {{api}}/catalog/products?categorySlug=sofas&sort=PRICE_ASC&limit=10
 
-### 6. In stock only
+### 6. In stock only (made to order, backorderable, or unreserved stock - the card's own rule)
 GET {{api}}/catalog/products?inStockOnly=true&limit=10
+
+### 6a. (Prompt 4) The grid alone: MySQL filters, sorts and pages; send it twice and the second
+### answer comes from the grid cache (sf:list:grid:*). Deep pages cost the same as page 1.
+### (Prompt 5) Listings show PUBLIC and CATALOG_ONLY products; a query (`q`) shows PUBLIC and
+### SEARCH_ONLY. Cards carry the SMALL and MEDIUM renditions only - the PDP gallery keeps all.
+GET {{api}}/catalog/products?categorySlug=sofas&includeFacets=false&limit=24&page=3
 
 ### 7. Cursor pagination for infinite scroll
 # @name page1
@@ -36,7 +42,7 @@ GET {{api}}/catalog/products?sort=NAME_ASC&limit=12
 ###
 GET {{api}}/catalog/products?sort=NAME_ASC&limit=12&cursor={{page1.response.body.data.nextCursor}}
 
-### 8. Facet definitions and price bounds for a scope, with no grid attached
+### 8. Facet definitions and price bounds for a scope, with no grid attached (SQL aggregates only)
 GET {{api}}/catalog/filters?categorySlug=sofas
 
 ### 9. Curated strips
@@ -123,6 +129,8 @@ GET {{api}}/catalog/products/{{slug}}/options
 GET {{api}}/catalog/products/{{slug}}/related?limit=6
 
 ### 24. Recently viewed / compare: many products, one round trip
+### (Prompt 5) Only reachable products come back: a draft, hidden, scheduled or deleted id or slug
+### is simply absent, never an error that reveals it exists.
 POST {{api}}/catalog/products/batch
 Content-Type: application/json
 

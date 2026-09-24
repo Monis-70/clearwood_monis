@@ -18,6 +18,7 @@ import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { catalogCacheService } from '../catalog-admin/catalogCache.service';
 
+import { listingIndexService } from './listingIndex.service';
 import { searchIndexerService } from './searchIndexer.service';
 
 /** Admin-side search management: synonyms, reindex jobs and index inspection. */
@@ -208,14 +209,13 @@ export const searchAdminService = {
     stored: SearchDocument | null;
     rebuilt: Record<string, unknown> | null;
   }> {
-    const [stored] = await searchDocumentRepository.scan(
-      { locale: 'en', entityTypes: ['PRODUCT'], entityIds: [productId] },
-      1,
-    );
+    const stored = await searchDocumentRepository.findActive('PRODUCT', productId, 'en');
 
     const product = await storefrontRepository.findIndexableById(productId);
+    // Rebuilt from the prices the index holds, so a mismatch means the text drifted.
+    const prices = (await listingIndexService.read([productId])).get(productId);
     const rebuilt = product
-      ? ((await searchIndexerService.buildProductDocument(product)) as unknown as Record<
+      ? ((await searchIndexerService.buildProductDocument(product, prices)) as unknown as Record<
           string,
           unknown
         >)

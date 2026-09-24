@@ -1,5 +1,7 @@
 import type {
+  CategoryKind,
   FacetKind,
+  ProductBadgeCode,
   ProductRelationType,
   ProductSort,
   ResolveResultType,
@@ -49,6 +51,13 @@ export interface ProductSwatchDto {
   isInStock: boolean;
 }
 
+/** A merchandising badge; the words are data (the `catalog.badges` setting or the product). */
+export interface ProductBadgeDto {
+  code: ProductBadgeCode;
+  label: string;
+  color: string | null;
+}
+
 export interface ProductCardDto {
   id: string;
   slug: string;
@@ -80,9 +89,12 @@ export interface ProductCardDto {
   ratingAvgBp: number;
   ratingCount: number;
   soldCount: number;
+  /** Effective now: the flag, or live within the new-arrival window. */
   isNewArrival: boolean;
+  /** Effective now: the flag, until featuredUntil. */
   isFeatured: boolean;
   isBestSeller: boolean;
+  badges: ProductBadgeDto[];
   variantCount: number;
   swatches: ProductSwatchDto[];
   /** Populated only when the listing was driven by a search query. */
@@ -161,6 +173,8 @@ export interface OptionValueAvailabilityDto {
   valueId: string;
   valueCode: string;
   label: string;
+  /** Admin-written explanation of the option ("Velvet - soft, stain resistant"). */
+  description: string | null;
   colorHex: string | null;
   swatchMediaId: string | null;
   isAvailable: boolean;
@@ -228,6 +242,11 @@ export interface BreadcrumbDto {
   path: string;
 }
 
+export interface ProductRelationGroupDto {
+  type: ProductRelationType;
+  items: ProductCardDto[];
+}
+
 export interface ProductDetailDto {
   id: string;
   slug: string;
@@ -261,14 +280,21 @@ export interface ProductDetailDto {
   allowCustomization: boolean;
   manufacturedInHouse: boolean;
   manufacturingNote: string | null;
+  badges: ProductBadgeDto[];
   warrantyMonths: number | null;
   careInstructions: string | null;
   assemblyRequired: boolean;
   dimensions: DimensionsDto;
   specs: SpecGroupDto[];
   delivery: DeliveryEstimateDto | null;
+  /** Curated relations of every type (else the primary category's best sellers), capped. */
   related: ProductCardDto[];
   frequentlyBoughtTogether: ProductCardDto[];
+  /**
+   * Every curated relation, grouped by type in PRODUCT_RELATION_TYPES order, each group in the
+   * admin's position order. Only products a shopper can open appear; an empty type is omitted.
+   */
+  relationGroups: ProductRelationGroupDto[];
   ratingAvgBp: number;
   ratingCount: number;
   seo: { title: string; description: string; keywords: string | null; canonicalPath: string };
@@ -285,13 +311,23 @@ export interface CategoryLandingDto {
     name: string;
     path: string;
     depth: number;
+    /** SERVICE: a service line - render its enquiry form (leadFormKey), not a product grid. */
+    kind: CategoryKind;
+    leadFormKey: string | null;
     description: string | null;
     shortDescription: string | null;
     bannerMediaId: string | null;
     mobileBannerMediaId: string | null;
   };
   breadcrumbs: BreadcrumbDto[];
-  children: { id: string; slug: string; name: string; productCount: number }[];
+  children: {
+    id: string;
+    slug: string;
+    name: string;
+    kind: CategoryKind;
+    leadFormKey: string | null;
+    productCount: number;
+  }[];
   facetDefaults: FacetDto[];
   featured: ProductCardDto[];
   productCount: number;
@@ -305,6 +341,7 @@ export interface CollectionDto {
   name: string;
   type: string;
   description: string | null;
+  imageMediaId: string | null;
   bannerMediaId: string | null;
   mobileBannerMediaId: string | null;
   productCount: number;

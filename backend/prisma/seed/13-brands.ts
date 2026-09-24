@@ -1,5 +1,6 @@
 import { brandAdminService } from '../../src/container';
 
+import { DEMO_PRODUCTS } from './data/demoProducts';
 import { log, prisma } from './context';
 import { ensureSeedMedia } from './media-assets';
 
@@ -34,9 +35,16 @@ const BRANDS = [
 ] as const;
 
 export async function seedBrands(): Promise<void> {
-  let created = 0;
+  const createdSlugs = new Set<string>();
 
   for (const brand of BRANDS) {
+    // CREATE-ONLY (deleted rows included): logo, position, state and copy are the admin's.
+    const existing = await prisma.brand.findFirst({
+      where: { slug: brand.slug },
+      select: { id: true },
+    });
+    if (existing) continue;
+
     const logo = await ensureSeedMedia({
       key: `brand-${brand.slug}`,
       label: brand.name,
@@ -47,17 +55,6 @@ export async function seedBrands(): Promise<void> {
       altText: `${brand.name} logo`,
     });
 
-    const existing = await prisma.brand.findFirst({ where: { slug: brand.slug } });
-
-    if (existing) {
-      // Structural fields stay in sync; the admin-editable description is written once.
-      await prisma.brand.update({
-        where: { id: existing.id },
-        data: { logoMediaId: logo.id, position: brand.position, deletedAt: null },
-      });
-      continue;
-    }
-
     await brandAdminService.create({
       name: brand.name,
       slug: brand.slug,
@@ -66,32 +63,44 @@ export async function seedBrands(): Promise<void> {
       isActive: true,
       position: brand.position,
     });
-    created += 1;
+    createdSlugs.add(brand.slug);
   }
 
-  // Attach the demo catalog: outdoor products to the outdoor label, the rest to the house brand.
+  /*
+   * Attach the demo catalog - only the demo SKUs, and only to a brand created in this run - so a
+   * re-seed never brands a product an admin created or whose brand an admin cleared.
+   */
   const [house, outdoor] = await Promise.all([
-    prisma.brand.findFirst({ where: { slug: 'clearwood' } }),
-    prisma.brand.findFirst({ where: { slug: 'clearwood-outdoor' } }),
+    createdSlugs.has('clearwood')
+      ? prisma.brand.findFirst({ where: { slug: 'clearwood', deletedAt: null } })
+      : null,
+    createdSlugs.has('clearwood-outdoor')
+      ? prisma.brand.findFirst({ where: { slug: 'clearwood-outdoor', deletedAt: null } })
+      : null,
   ]);
 
   let assigned = 0;
 
-  if (house && outdoor) {
+  if (house || outdoor) {
     const products = await prisma.product.findMany({
-      where: { brandId: null, deletedAt: null },
+      where: {
+        sku: { in: DEMO_PRODUCTS.map((product) => product.sku) },
+        brandId: null,
+        deletedAt: null,
+      },
       select: { id: true, slug: true },
     });
 
     for (const product of products) {
-      const brandId = /outdoor|garden|balcony|patio/.test(product.slug) ? outdoor.id : house.id;
-      await prisma.product.update({ where: { id: product.id }, data: { brandId } });
+      const brand = /outdoor|garden|balcony|patio/.test(product.slug) ? outdoor : house;
+      if (!brand) continue;
+      await prisma.product.update({ where: { id: product.id }, data: { brandId: brand.id } });
       assigned += 1;
     }
   }
 
   log(
     'brands',
-    `${BRANDS.length} brands ensured (${created} created), ${assigned} products linked`,
+    `${BRANDS.length} brands ensured (${createdSlugs.size} created), ${assigned} products linked`,
   );
 }

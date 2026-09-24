@@ -122,6 +122,14 @@ export const RENDITION_PRESETS: readonly RenditionPreset[] = [
   },
 ] as const;
 
+/**
+ * The renditions a product CARD carries (listing, related, recently viewed, wishlist, CMS grids),
+ * from the ladder's documented uses: SMALL for list rows and small cards, MEDIUM for product cards
+ * (PROJECT_CONTEXT §13). Each comes in every format the ladder emitted, and the card keeps the
+ * original's `url` as its last fallback. Galleries and the PDP still receive the whole ladder.
+ */
+export const CARD_RENDITION_LABELS = ['SMALL', 'MEDIUM'] as const;
+
 /** System media folders created by the seed; `isSystem` rows cannot be renamed or deleted. */
 export const SYSTEM_MEDIA_FOLDERS = [
   'products',

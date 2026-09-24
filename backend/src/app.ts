@@ -71,6 +71,8 @@ export function createApp(): Express {
   registerCatalogSubscribers();
 
   app.disable('x-powered-by');
+  // `false` unless TRUST_PROXY names the proxies in front of us; env.ts refuses anything broader.
+  app.set('trust proxy', env.TRUST_PROXY);
 
   app.use(requestId);
   app.use(requestScopeContext);

@@ -17,8 +17,9 @@ import { DEFAULT_IFRAME_HOSTS } from './htmlSanitizer';
 export const CMS_CACHE = CATALOG_CACHE_PREFIXES;
 
 export const cmsCacheService = {
-  pageKey(slug: string, customerGroupId: string | null, device: string): string {
-    return `${CMS_CACHE.cmsPage}${slug}:${customerGroupId ?? 'default'}:${device}`;
+  /** `audience` is productQueryService.pricingAudience's key: a page shows quoted card prices. */
+  pageKey(slug: string, audience: string | null, device: string): string {
+    return `${CMS_CACHE.cmsPage}${slug}:${audience ?? 'anon'}:${device}`;
   },
 
   bannerKey(placement: string, device: string): string {
@@ -41,14 +42,10 @@ export const cmsCacheService = {
     return env.CMS_CACHE_TTL_SECONDS;
   },
 
-  async get<T>(key: string): Promise<T | null> {
-    if (env.CMS_CACHE_TTL_SECONDS === 0) return null;
-    return cache.get<T>(key);
-  },
-
-  async set<T>(key: string, value: T): Promise<void> {
-    if (env.CMS_CACHE_TTL_SECONDS === 0) return;
-    await cache.set(key, value, env.CMS_CACHE_TTL_SECONDS);
+  /** Read-through; with CMS_CACHE_TTL_SECONDS=0 every call renders. */
+  async wrap<T>(key: string, producer: () => Promise<T>): Promise<T> {
+    if (env.CMS_CACHE_TTL_SECONDS === 0) return producer();
+    return cache.wrap(key, env.CMS_CACHE_TTL_SECONDS, producer);
   },
 
   /** Hosts an embedded iframe may point at, from settings, merged with the built-in defaults. */

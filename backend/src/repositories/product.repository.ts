@@ -6,6 +6,7 @@ import type { ListQuery } from '@shared/schemas/common';
 import { prisma } from '../config/prisma';
 
 import { notDeleted, orderBy, pageResult, skipTake, type PageResult } from './helpers';
+import { browsableWhere, reachableWhere } from './storefront.repository';
 
 export type AdminProductQuery = AdminProductListQuery;
 
@@ -54,7 +55,7 @@ const summaryInclude = {
 const adminInclude = {
   brand: true,
   taxClass: true,
-  categories: { orderBy: [{ position: 'asc' as const }] },
+  categories: { orderBy: [{ isPrimary: 'desc' as const }, { position: 'asc' as const }] },
   attributeValues: { orderBy: [{ position: 'asc' as const }] },
   variants: {
     where: notDeleted,
@@ -69,6 +70,77 @@ export type ProductWithDetail = Prisma.ProductGetPayload<{ include: typeof detai
 export type ProductWithSummary = Prisma.ProductGetPayload<{ include: typeof summaryInclude }>;
 export type ProductForAdmin = Prisma.ProductGetPayload<{ include: typeof adminInclude }>;
 
+/** One admin table row: scalars, stock per variant, the primary link and one thumbnail. */
+const adminRowSelect = {
+  id: true,
+  sku: true,
+  slug: true,
+  deletedSlug: true,
+  name: true,
+  status: true,
+  productType: true,
+  visibility: true,
+  brandId: true,
+  taxClassId: true,
+  basePricePaise: true,
+  completenessScore: true,
+  publishedAt: true,
+  lastPublishedAt: true,
+  isFeatured: true,
+  isNewArrival: true,
+  allowCustomization: true,
+  version: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+  variants: { where: notDeleted, select: { stockQty: true } },
+  categories: { where: { isPrimary: true }, select: { categoryId: true } },
+  media: {
+    where: { role: 'PRIMARY' },
+    take: 1,
+    select: {
+      media: {
+        select: {
+          path: true,
+          variants: { where: { label: 'THUMB' }, select: { path: true, format: true } },
+        },
+      },
+    },
+  },
+  _count: { select: { media: true } },
+} satisfies Prisma.ProductSelect;
+
+export type ProductAdminRow = Prisma.ProductGetPayload<{ select: typeof adminRowSelect }>;
+
+/** The storefront availability rule (catalog-admin/availability.ts) as a Prisma filter. */
+const sellableVariant: Prisma.ProductVariantWhereInput = {
+  ...notDeleted,
+  isActive: true,
+  OR: [{ allowBackorder: true }, { stockQty: { gt: prisma.productVariant.fields.reservedQty } }],
+};
+
+function publicationWhere(
+  state: AdminProductQuery['publication'],
+  now: Date,
+): Prisma.ProductWhereInput {
+  switch (state) {
+    case 'DRAFT':
+      return { status: 'DRAFT', deletedAt: null };
+    case 'ARCHIVED':
+      return { OR: [{ status: 'ARCHIVED' }, { deletedAt: { not: null } }] };
+    case 'SCHEDULED':
+      return { status: 'ACTIVE', deletedAt: null, publishedAt: { gt: now } };
+    case 'LIVE':
+      return {
+        status: 'ACTIVE',
+        deletedAt: null,
+        OR: [{ publishedAt: null }, { publishedAt: { lte: now } }],
+      };
+    default:
+      return {};
+  }
+}
+
 export interface ProductFilter {
   includeUnpublished?: boolean;
   categoryIds?: string[];
@@ -78,7 +150,8 @@ export interface ProductFilter {
 function where(filter: ProductFilter = {}): Prisma.ProductWhereInput {
   return {
     ...notDeleted,
-    ...(filter.includeUnpublished ? {} : { status: 'ACTIVE', visibility: { not: 'HIDDEN' } }),
+    // The storefront reachability rule (shared/enums REACHABLE_VISIBILITIES), not a local variant.
+    ...(filter.includeUnpublished ? {} : reachableWhere()),
     ...(filter.status ? { status: filter.status } : {}),
     ...(filter.categoryIds
       ? { categories: { some: { categoryId: { in: filter.categoryIds } } } }
@@ -118,13 +191,13 @@ export const productRepository = {
     return pageResult(items, total, query);
   },
 
-  /** Feeds Category.productCountCache — grouped in one query rather than one count per category. */
+  /** Feeds Category.productCountCache: what a category's own listing can show, in one query. */
   countByCategory(): Promise<{ categoryId: string; total: number }[]> {
     return prisma.productCategory
       .groupBy({
         by: ['categoryId'],
         _count: { _all: true },
-        where: { product: { ...notDeleted, status: 'ACTIVE' } },
+        where: { product: browsableWhere() },
       })
       .then((rows) => rows.map((row) => ({ categoryId: row.categoryId, total: row._count._all })));
   },
@@ -162,27 +235,59 @@ export const productRepository = {
     return found !== null;
   },
 
-  async listForAdmin(query: AdminProductQuery): Promise<PageResult<ProductForAdmin>> {
+  async listForAdmin(query: AdminProductQuery): Promise<PageResult<ProductAdminRow>> {
     const stockFilter: Prisma.ProductWhereInput =
       query.stock === undefined || query.stock === 'ANY'
         ? {}
         : query.stock === 'OUT_OF_STOCK'
-          ? { variants: { every: { stockQty: { lte: 0 } } } }
+          ? { isMadeToOrder: false, variants: { none: sellableVariant } }
           : query.stock === 'LOW_STOCK'
-            ? { variants: { some: { stockStatus: 'LOW_STOCK' } } }
-            : { variants: { some: { stockQty: { gt: 0 } } } };
+            ? { variants: { some: { ...notDeleted, isActive: true, stockStatus: 'LOW_STOCK' } } }
+            : { OR: [{ isMadeToOrder: true }, { variants: { some: sellableVariant } }] };
+
+    const and: Prisma.ProductWhereInput[] = [stockFilter];
+    if (query.publication) and.push(publicationWhere(query.publication, new Date()));
+    if (query.q) {
+      and.push({
+        OR: [
+          { name: { contains: query.q } },
+          { sku: { contains: query.q } },
+          { slug: { contains: query.q } },
+          { searchKeywords: { contains: query.q } },
+          // A variant SKU finds its product too.
+          { variants: { some: { sku: { contains: query.q }, ...notDeleted } } },
+        ],
+      });
+    }
 
     const args = {
       where: {
-        ...(query.includeDeleted ? {} : notDeleted),
+        ...(query.includeDeleted || query.publication === 'ARCHIVED' ? {} : notDeleted),
         ...(query.status ? { status: query.status } : {}),
+        ...(query.visibility ? { visibility: query.visibility } : {}),
         ...(query.brandId ? { brandId: query.brandId } : {}),
         ...(query.taxClassId ? { taxClassId: query.taxClassId } : {}),
         ...(query.productType ? { productType: query.productType } : {}),
         ...(query.isFeatured === undefined ? {} : { isFeatured: query.isFeatured }),
         ...(query.isNewArrival === undefined ? {} : { isNewArrival: query.isNewArrival }),
+        ...(query.isSpecialCollection === undefined
+          ? {}
+          : { isSpecialCollection: query.isSpecialCollection }),
+        ...(query.customizable === undefined ? {} : { allowCustomization: query.customizable }),
+        ...(query.madeToOrder === undefined ? {} : { isMadeToOrder: query.madeToOrder }),
         ...(query.categoryId ? { categories: { some: { categoryId: query.categoryId } } } : {}),
+        ...(query.collectionId
+          ? { collections: { some: { collectionId: query.collectionId } } }
+          : {}),
         ...(query.updatedSince ? { updatedAt: { gte: query.updatedSince } } : {}),
+        ...(query.createdFrom || query.createdTo
+          ? {
+              createdAt: {
+                ...(query.createdFrom ? { gte: query.createdFrom } : {}),
+                ...(query.createdTo ? { lte: query.createdTo } : {}),
+              },
+            }
+          : {}),
         ...(query.priceMin === undefined && query.priceMax === undefined
           ? {}
           : {
@@ -204,17 +309,7 @@ export const productRepository = {
           : query.hasMedia
             ? { media: { some: {} } }
             : { media: { none: {} } }),
-        ...(query.q
-          ? {
-              OR: [
-                { name: { contains: query.q } },
-                { sku: { contains: query.q } },
-                { slug: { contains: query.q } },
-                { searchKeywords: { contains: query.q } },
-              ],
-            }
-          : {}),
-        ...stockFilter,
+        AND: and,
       } satisfies Prisma.ProductWhereInput,
     };
 
@@ -222,7 +317,7 @@ export const productRepository = {
       prisma.product.findMany({
         ...args,
         ...skipTake(query),
-        include: adminInclude,
+        select: adminRowSelect,
         orderBy: orderBy(query.sort, query.order, SORTABLE, [
           { updatedAt: 'desc' },
           { name: 'asc' },
@@ -238,18 +333,34 @@ export const productRepository = {
     return prisma.product.create({ data, select: { id: true } });
   },
 
-  softDelete(id: string): Promise<{ id: string }> {
+  /**
+   * Runs `work` in a transaction holding the product row lock, so writes that keep a per-product
+   * invariant (default variant, primary image, primary category, option combinations) queue up
+   * behind each other instead of racing. The unique indexes stay the final guarantee.
+   */
+  withProductLock<T>(
+    productId: string,
+    work: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Product WHERE id = ${productId} FOR UPDATE`;
+      return work(tx);
+    });
+  },
+
+  /** The slug is released (kept in `deletedSlug`) so a new product may use it. */
+  softDelete(id: string, slug: string): Promise<{ id: string }> {
     return prisma.product.update({
       where: { id },
-      data: { deletedAt: new Date(), status: 'ARCHIVED' },
+      data: { deletedAt: new Date(), status: 'ARCHIVED', slug: `deleted-${id}`, deletedSlug: slug },
       select: { id: true },
     });
   },
 
-  restore(id: string): Promise<{ id: string }> {
+  restore(id: string, slug: string): Promise<{ id: string }> {
     return prisma.product.update({
       where: { id },
-      data: { deletedAt: null, status: 'DRAFT' },
+      data: { deletedAt: null, status: 'DRAFT', slug, deletedSlug: null },
       select: { id: true },
     });
   },

@@ -4,11 +4,12 @@ import type { CartIssueDto, CartValidationDto } from '@shared/types/cart';
 import { env } from '../../config/env';
 import type { CartWithItems } from '../../repositories/cart.repository';
 import { cartRepository } from '../../repositories/cart.repository';
+import { isReachable } from '../../repositories/storefront.repository';
 import { pricingContextLoader } from '../pricing/pricingContext.loader';
 import { pricingFacade } from '../pricing/pricing.facade';
 import { shippingService } from '../pricing/shipping.service';
 
-import { cartPricingService } from './cartPricing.service';
+import { cartPricingService, type QuoteOutcome } from './cartPricing.service';
 
 /**
  * Everything that can be wrong with a cart, in one pass.
@@ -22,7 +23,7 @@ import { cartPricingService } from './cartPricing.service';
  * shopper sees is the one the pricing engine produced.
  */
 
-interface LineFacts {
+export interface LineFacts {
   lineId: string;
   productId: string;
   variantId: string | null;
@@ -62,18 +63,13 @@ export const cartValidationService = {
     const variants = await cartRepository.findVariantFacts(variantIds);
     const variantById = new Map(variants.map((variant) => [variant.id, variant]));
 
-    const now = Date.now();
+    const now = new Date();
 
     return items.map((item) => {
       const product = productById.get(item.productId);
       const variant = item.variantId ? variantById.get(item.variantId) : undefined;
 
-      const productSellable =
-        product !== undefined &&
-        product.deletedAt === null &&
-        product.status === 'ACTIVE' &&
-        product.visibility !== 'HIDDEN' &&
-        (product.publishedAt === null || product.publishedAt.getTime() <= now);
+      const productSellable = product !== undefined && isReachable(product, now);
 
       const variantSellable =
         item.variantId === null ||
@@ -98,12 +94,18 @@ export const cartValidationService = {
 
   async validate(
     cart: CartWithItems,
-    options: { autoFix?: boolean; customerId?: string | null } = {},
+    options: {
+      autoFix?: boolean;
+      customerId?: string | null;
+      /** A caller that already reads this cart's facts or quote passes them instead of re-reading. */
+      facts?: Promise<LineFacts[]>;
+      quoted?: Promise<QuoteOutcome>;
+    } = {},
   ): Promise<CartValidationDto> {
     const issues: CartIssueDto[] = [];
     const fixes: CartValidationDto['fixes'] = [];
 
-    const facts = await this.factsFor(cart);
+    const facts = await (options.facts ?? this.factsFor(cart));
 
     if (facts.length > env.CART_MAX_LINES) {
       issues.push(
@@ -224,10 +226,11 @@ export const cartValidationService = {
     /* Cart-level: minimum order value, straight from the pricing settings. */
     if (facts.length > 0) {
       const settings = await pricingContextLoader.readSettings();
-      const { breakdown } = await cartPricingService.quote(cart, {
-        ...(options.customerId === undefined ? {} : { customerId: options.customerId }),
-        persist: false,
-      });
+      const { breakdown } = await (options.quoted ??
+        cartPricingService.quote(cart, {
+          ...(options.customerId === undefined ? {} : { customerId: options.customerId }),
+          persist: false,
+        }));
 
       if (
         settings.minOrderValuePaise > 0 &&

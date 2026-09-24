@@ -13,13 +13,16 @@ import {
   brandListQuerySchema,
   brandUpdateSchema,
   bulkActionSchema,
+  catalogSettingsUpdateSchema,
   categoryAttributeUpsertSchema,
+  categoryBulkSchema,
   categoryCreateSchema,
   categoryDeleteQuerySchema,
   categoryListQuerySchema,
   categoryMoveSchema,
   categoryUpdateSchema,
   collectionCreateSchema,
+  adminCollectionListQuerySchema,
   collectionProductsSchema,
   collectionUpdateSchema,
   exportQuerySchema,
@@ -36,6 +39,7 @@ import {
   productCreateSchema,
   productDuplicateSchema,
   productListQuerySchema,
+  productPublishSchema,
   productRelationsSchema,
   productUpdateSchema,
   reorderSchema,
@@ -51,6 +55,7 @@ import { idParamSchema, listQuerySchema } from '@shared/schemas/common';
 import {
   adminAttributeController,
   adminBrandController,
+  adminCatalogSettingsController,
   adminCategoryController,
   adminCollectionController,
   adminImportExportController,
@@ -238,12 +243,83 @@ registry.registerPath({
   },
 });
 
+const categoryProductSchema = registry.register(
+  'AdminCategoryProduct',
+  z.object({
+    productId: z.string(),
+    sku: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    status: z.string(),
+    visibility: z.string(),
+    publication: z.enum(['DRAFT', 'SCHEDULED', 'LIVE', 'ARCHIVED']),
+    isPrimary: z.boolean(),
+    position: z.number().int(),
+  }),
+);
+
+registry.registerPath({
+  method: 'get',
+  path: path('/catalog/categories/{id}/products'),
+  tags: ['Admin catalog'],
+  summary: "A category's own products in curated order (what CURATED sort shows)",
+  request: { params: idParamSchema, query: listQuerySchema },
+  responses: {
+    200: jsonContent(successBodySchema(z.array(categoryProductSchema)), 'Paginated links'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: path('/catalog/categories/{id}/products/reorder'),
+  tags: ['Admin catalog'],
+  summary: "Set products' positions inside one category's curated order",
+  request: {
+    params: idParamSchema,
+    body: { content: { 'application/json': { schema: reorderSchema } } },
+  },
+  responses: {
+    200: jsonContent(
+      successBodySchema(z.object({ reordered: z.number().int() })),
+      'Positions written',
+    ),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+    422: jsonContent(errorBodySchema, 'A product that is not linked to the category, or repeated'),
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: path('/catalog/collections/{id}/restore'),
+  tags: ['Admin catalog'],
+  summary: 'Restore a soft-deleted collection (AUTOMATIC ones are re-evaluated)',
+  request: { params: idParamSchema },
+  responses: {
+    200: jsonContent(successBodySchema(z.record(z.any())), 'Restored'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+  },
+});
+
 registry.registerPath({
   method: 'post',
   path: path('/catalog/products/{id}/publish'),
   tags: ['Admin catalog'],
-  summary: 'Publish a product; 422 lists every blocker',
-  request: { params: idParamSchema },
+  summary:
+    'Publish a product now, or schedule it with a future `publishAt`; 422 lists every blocker',
+  request: {
+    params: idParamSchema,
+    body: { content: { 'application/json': { schema: productPublishSchema } } },
+  },
   responses: {
     200: jsonContent(successBodySchema(z.record(z.any())), 'Published'),
     ...unauthorised,
@@ -251,6 +327,30 @@ registry.registerPath({
     ...notFound,
     ...commonErrorResponses,
     422: jsonContent(errorBodySchema, 'PRODUCT_NOT_PUBLISHABLE with an itemised blocker list'),
+  },
+});
+
+registry.registerPath({
+  method: 'put',
+  path: path('/catalog/products/{id}/relations'),
+  tags: ['Admin catalog'],
+  summary:
+    "Replace a product's curated relations (RELATED, SIMILAR, ALTERNATIVE, REPLACEMENT, " +
+    'COMPLEMENTARY, FREQUENTLY_BOUGHT, ...), ordered by `position`; SIMILAR is mirrored',
+  request: {
+    params: idParamSchema,
+    body: { content: { 'application/json': { schema: productRelationsSchema } } },
+  },
+  responses: {
+    200: jsonContent(successBodySchema(z.record(z.any())), 'The product with its relations'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+    422: jsonContent(
+      errorBodySchema,
+      'A self-relation, the same product twice under one type, or an unknown/deleted product',
+    ),
   },
 });
 
@@ -273,6 +373,67 @@ registry.registerPath({
       errorBodySchema,
       'VARIANT_MATRIX_TOO_LARGE or a non variant-defining attribute',
     ),
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: path('/catalog/products/{id}/variants'),
+  tags: ['Admin catalog'],
+  summary: 'Create a variant; its option combination must be unused on the product',
+  request: {
+    params: idParamSchema,
+    body: { content: { 'application/json': { schema: variantCreateSchema } } },
+  },
+  responses: {
+    201: jsonContent(successBodySchema(z.record(z.any())), 'Created'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+    409: jsonContent(errorBodySchema, 'VARIANT_COMBINATION_EXISTS or WRITE_CONFLICT (retry)'),
+    422: jsonContent(errorBodySchema, 'A value that does not belong to its attribute'),
+  },
+});
+
+const variantParams = idParamSchema.extend({ variantId: idParamSchema.shape.id });
+
+registry.registerPath({
+  method: 'patch',
+  path: path('/catalog/products/{id}/variants/{variantId}'),
+  tags: ['Admin catalog'],
+  summary: 'Update a variant (optimistic locking via `version`)',
+  request: {
+    params: variantParams,
+    body: { content: { 'application/json': { schema: variantUpdateSchema } } },
+  },
+  responses: {
+    200: jsonContent(successBodySchema(z.record(z.any())), 'Updated'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+    409: jsonContent(
+      errorBodySchema,
+      'STALE_RESOURCE, VARIANT_COMBINATION_EXISTS or WRITE_CONFLICT (retry)',
+    ),
+    422: jsonContent(errorBodySchema, 'A value that does not belong to its attribute'),
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: path('/catalog/products/{id}/variants/{variantId}/set-default'),
+  tags: ['Admin catalog'],
+  summary: 'Make this the single default variant of its product',
+  request: { params: variantParams },
+  responses: {
+    200: jsonContent(successBodySchema(z.record(z.any())), 'The new default'),
+    ...unauthorised,
+    ...forbidden,
+    ...notFound,
+    ...commonErrorResponses,
+    409: jsonContent(errorBodySchema, 'WRITE_CONFLICT (retry)'),
   },
 });
 
@@ -342,6 +503,60 @@ registry.registerPath({
 
 /* ---------------------------------------------------------------- routes */
 
+/* storefront catalog settings (page sizes, out-of-stock policy, new arrivals, badges) */
+const catalogSettingsSchema = registry.register(
+  'AdminCatalogSettings',
+  z.object({
+    defaultPageSize: z.number().int(),
+    maxPageSize: z.number().int(),
+    showOutOfStock: z.boolean(),
+    newArrivalDays: z.number().int(),
+    badges: z.record(z.object({ label: z.string(), color: z.string().nullable() })),
+  }),
+);
+
+registry.registerPath({
+  method: 'get',
+  path: path('/catalog/settings'),
+  tags: ['Admin catalog'],
+  summary: 'The storefront catalog settings: page sizes, out-of-stock policy, new arrivals, badges',
+  responses: {
+    200: jsonContent(successBodySchema(catalogSettingsSchema), 'Settings as stored'),
+    ...unauthorised,
+    ...forbidden,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'put',
+  path: path('/catalog/settings'),
+  tags: ['Admin catalog'],
+  summary: 'Change catalog settings; badges merge per code and `null` switches one off',
+  request: { body: { content: { 'application/json': { schema: catalogSettingsUpdateSchema } } } },
+  responses: {
+    200: jsonContent(successBodySchema(catalogSettingsSchema), 'Settings after the change'),
+    ...unauthorised,
+    ...forbidden,
+    ...commonErrorResponses,
+  },
+});
+
+adminCatalogRouter.get(
+  '/catalog/settings',
+  authenticate('ADMIN'),
+  requirePermission('catalog.product.read'),
+  asyncHandler(adminCatalogSettingsController.get),
+);
+
+adminCatalogRouter.put(
+  '/catalog/settings',
+  ...guard,
+  requirePermission('catalog.product.update'),
+  validate({ body: catalogSettingsUpdateSchema }),
+  asyncHandler(adminCatalogSettingsController.update),
+);
+
 /* categories */
 adminCatalogRouter.get(
   '/catalog/categories/tree',
@@ -371,7 +586,7 @@ adminCatalogRouter.post(
   ...guard,
   requirePermission('catalog.category.update'),
   authRateLimit('catalog-bulk'),
-  validate({ body: bulkActionSchema }),
+  validate({ body: categoryBulkSchema }),
   asyncHandler(adminCategoryController.bulk),
 );
 
@@ -439,6 +654,23 @@ adminCatalogRouter.post(
   requirePermission('catalog.category.update'),
   validate({ params: idParamSchema }),
   asyncHandler(adminCategoryController.restore),
+);
+
+/* a category's own products, in curated order */
+adminCatalogRouter.get(
+  '/catalog/categories/:id/products',
+  authenticate('ADMIN'),
+  requirePermission('catalog.category.read'),
+  validate({ params: idParamSchema, query: listQuerySchema }),
+  asyncHandler(adminCategoryController.products),
+);
+
+adminCatalogRouter.post(
+  '/catalog/categories/:id/products/reorder',
+  ...guard,
+  requirePermission('catalog.category.reorder'),
+  validate({ params: idParamSchema, body: reorderSchema }),
+  asyncHandler(adminCategoryController.reorderProducts),
 );
 
 /* category ↔ attribute mapping */
@@ -701,7 +933,7 @@ adminCatalogRouter.post(
   '/catalog/products/:id/publish',
   ...guard,
   requirePermission('catalog.product.publish'),
-  validate({ params: idParamSchema }),
+  validate({ params: idParamSchema, body: productPublishSchema }),
   asyncHandler(adminProductController.publish),
 );
 
@@ -880,7 +1112,7 @@ adminCatalogRouter.get(
   '/catalog/collections',
   authenticate('ADMIN'),
   requirePermission('catalog.collection.read'),
-  validate({ query: listQuerySchema }),
+  validate({ query: adminCollectionListQuerySchema }),
   asyncHandler(adminCollectionController.list),
 );
 
@@ -914,6 +1146,14 @@ adminCatalogRouter.delete(
   requirePermission('catalog.collection.delete'),
   validate({ params: idParamSchema }),
   asyncHandler(adminCollectionController.remove),
+);
+
+adminCatalogRouter.post(
+  '/catalog/collections/:id/restore',
+  ...guard,
+  requirePermission('catalog.collection.update'),
+  validate({ params: idParamSchema }),
+  asyncHandler(adminCollectionController.restore),
 );
 
 adminCatalogRouter.put(

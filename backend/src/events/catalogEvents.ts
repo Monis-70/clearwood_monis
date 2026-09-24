@@ -15,10 +15,13 @@ import { logger } from '../config/logger';
 export interface CatalogEventMap {
   'product.changed': { productId: string; reason: string };
   'product.removed': { productId: string };
-  'category.changed': { categoryId?: string; reason: string };
+  /** `categoryIds`: the nodes whose subtree changed; absent = any category may have. */
+  'category.changed': { categoryId?: string; categoryIds?: string[]; reason: string };
   'collection.changed': { collectionId?: string; reason: string };
   'brand.changed': { brandId?: string; reason: string };
-  'attribute.changed': { attributeId?: string; reason: string };  'inventory.changed': { productId: string; variantId: string };
+  /** `textUnchanged`: groups, ordering, category mapping - nothing a product document shows. */
+  'attribute.changed': { attributeId?: string; textUnchanged?: boolean; reason: string };
+  'inventory.changed': { productId: string; variantId: string };
   /** A price rule, tier, price list or tax class moved: the indexed price range is now stale. */
   'pricing.changed': { productIds?: string[]; reason: string };
   /** Prompt 8 — the counters Prompt 7 left at zero. */

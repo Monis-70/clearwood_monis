@@ -82,7 +82,25 @@ passing tests) and **R12** (nothing earlier broken) are both satisfied.
   - The test suite now refuses any target that is not local, by host AND port, and production
     refuses to boot while a secret is still its `.env.example` placeholder.
   - Still open: indexes, FULLTEXT search, and a reproducible docker/compose database.
-- [ ] **Prompt 10B — Lead forms** _(next)_
+- [x] **Dynamic catalog + admin catalog management** (PROJECT_CONTEXT §47)
+  - Migration `catalog_management`: `Category.leadFormKey`, `AttributeValue.description`,
+    `Product.featuredUntil/badgeText/badgeColor`, `Collection.imageMediaId`, `Enquiry`.
+  - Effective category visibility everywhere, collection windows enforced, rule categories (new
+    arrivals by window, special collection, make your own), data-driven badges, scheduled
+    publication, and a reconciler schedule phase so the clock needs no cache flush.
+  - Admin: catalog settings, curated category order, collection restore, gated bulk activate and
+    merchandising, compact product table; variant option rules; CSV import validated like the API.
+  - The four new taxonomy groups (160 categories), Contract Based Work as a `SERVICE` line with a
+    request foundation (`/enquiries`), and a create-only seed that never undoes an admin's edit.
+- [x] **Catalog hardening — final backend catalog readiness** (PROJECT_CONTEXT §48)
+  - No migration. Every structural seed is create-only, deleted rows included; hard-deleted menu
+    items, attribute groups and synonyms are never re-added; single-default guards.
+  - CSV import invalidates only what its committed rows touched; CMS pages drop with the storefront;
+    category counts follow writes at once (the reconciler remains the backstop).
+  - Typed product relationships (RELATED, SIMILAR, ALTERNATIVE, REPLACEMENT, COMPLEMENTARY,
+    FREQUENTLY_BOUGHT, ...) with PDP `relationGroups`; `/related?type=` never falls back.
+  - Contract work refused on every product write path; `kind`/`leadFormKey` on tree and landing.
+- [ ] **Prompt 10B — Lead forms** _(next)_ — builds on the `Enquiry` foundation
 - [ ] **Prompt 11 — "Make your own" configurator**
 - [ ] **Prompt 12 — Frontend scaffold & design system**
 - [ ] **Prompt 13 — Storefront pages**

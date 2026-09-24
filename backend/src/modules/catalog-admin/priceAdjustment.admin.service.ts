@@ -10,6 +10,10 @@ import type { PriceAdjustmentConflictDto } from '@shared/types/catalogAdmin';
 
 import { prisma } from '../../config/prisma';
 import { notDeleted, pageResult, skipTake, type PageResult } from '../../repositories/helpers';
+import {
+  priceScheduleRepository,
+  type RuleTarget,
+} from '../../repositories/priceSchedule.repository';
 import { updateVersioned } from '../../repositories/versioned';
 import { AppError } from '../../utils/AppError';
 
@@ -19,6 +23,27 @@ import { catalogCacheService } from './catalogCache.service';
  * Price rules are stored and validated here; nothing is ever calculated.
  * The stacking engine that turns these rows into a price is Prompt 6.
  */
+
+/** The most products one rule write re-prices inline; past it, the leased full re-price runs. */
+const TARGETED_REPRICE_LIMIT = 500;
+
+/**
+ * Re-prices every product the rule reached before AND after the write (a rule moved off a
+ * product must re-price that product too). A GLOBAL rule, or a reach too wide to do inline,
+ * asks for the whole index instead. Exported for CSV import, which writes rules the same way.
+ */
+export async function announcePriceRules(...rules: RuleTarget[]): Promise<void> {
+  const reached = new Set<string>();
+  for (const rule of rules) {
+    const reach = await priceScheduleRepository.productsForRule(rule);
+    if (reach === 'ALL') return catalogCacheService.invalidatePricing();
+    for (const id of reach) reached.add(id);
+    if (reached.size > TARGETED_REPRICE_LIMIT) return catalogCacheService.invalidatePricing();
+  }
+  await catalogCacheService.invalidatePricing({ productIds: [...reached] });
+}
+
+const announce = announcePriceRules;
 
 function assertScopeTarget(input: {
   scope: string;
@@ -65,7 +90,7 @@ export const priceAdjustmentAdminService = {
       prisma.priceAdjustment.findMany({
         ...args,
         ...skipTake(query),
-        orderBy: [{ priority: 'asc' }, { createdAt: 'desc' }],
+        orderBy: [{ priority: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
       }),
       prisma.priceAdjustment.count(args),
     ]);
@@ -105,12 +130,12 @@ export const priceAdjustmentAdminService = {
       },
     });
 
-    await catalogCacheService.invalidatePricing();
+    await announce(created);
     return created;
   },
 
   async update(id: string, input: PriceAdjustmentUpdateInput): Promise<PriceAdjustment> {
-    await this.get(id);
+    const before = await this.get(id);
     const { version, ...rest } = input;
 
     const data: Record<string, unknown> = {};
@@ -119,24 +144,25 @@ export const priceAdjustmentAdminService = {
     }
 
     await updateVersioned(prisma.priceAdjustment, 'PriceAdjustment', id, version, data);
-    await catalogCacheService.invalidatePricing();
-    return this.get(id);
+    const after = await this.get(id);
+    await announce(before, after);
+    return after;
   },
 
   async setActive(id: string, isActive: boolean): Promise<PriceAdjustment> {
-    await this.get(id);
+    const before = await this.get(id);
     const updated = await prisma.priceAdjustment.update({ where: { id }, data: { isActive } });
-    await catalogCacheService.invalidatePricing();
+    await announce(before, updated);
     return updated;
   },
 
   async remove(id: string): Promise<void> {
-    await this.get(id);
+    const before = await this.get(id);
     await prisma.priceAdjustment.update({
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await catalogCacheService.invalidatePricing();
+    await announce(before);
   },
 
   /**

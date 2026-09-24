@@ -51,9 +51,11 @@ import { backfillProductMediaUsage, purgeLegacySvgSeedMedia } from './seed/media
 /**
  * Fully idempotent seed: run it as often as you like.
  *
- * Every step upserts. Structural data (paths, positions, kinds, flags, tax rates) is kept in sync,
- * but editorial content (names, descriptions, prices, SEO copy) is written once and then preserved —
- * re-seeding must never undo an admin edit (R8).
+ * Structural catalog data (tax classes, attributes, categories, collections, navigation, customer
+ * groups, brands, synonyms) is CREATE-ONLY: a re-run adds what is missing and never rewrites,
+ * reorders, re-activates or resurrects a row an admin changed or removed. Settings rows keep the
+ * admin's value; only their code-owned metadata (group, type, public flag) is refreshed.
+ * The demo steps (SEED_DEMO, development only) may reset their own demo rows.
  */
 
 async function main(): Promise<void> {
@@ -63,9 +65,9 @@ async function main(): Promise<void> {
   await seedSettings();
   await seedTaxClasses();
   await seedAttributes();
-  await seedCategories();
-  await seedCollections();
-  await seedNavigation();
+  const createdCategories = await seedCategories();
+  const createdCollections = await seedCollections();
+  await seedNavigation({ categories: createdCategories, collections: createdCollections });
   // Media folders must exist before the demo catalog uploads anything into them.
   await seedMediaFolders();
   // Pricing configuration is structural: the engine needs it with or without demo data.

@@ -58,6 +58,15 @@ function fromPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): Norm
         details: { field: error.meta?.field_name ?? null },
         isOperational: true,
       };
+    // A deadlock or write conflict: nothing was committed, so the same request can be retried.
+    case 'P2034':
+      return {
+        statusCode: 409,
+        code: 'WRITE_CONFLICT',
+        message: 'Another change to the same record landed first - retry the request',
+        details: null,
+        isOperational: true,
+      };
     default:
       return {
         statusCode: 400,

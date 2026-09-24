@@ -68,13 +68,15 @@ export const attributeAdminService = {
       throw AppError.conflict('That group code is already in use', { code: input.code });
 
     const group = await prisma.attributeGroup.create({ data: input });
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return group;
   },
 
   async updateGroup(id: string, input: AttributeGroupUpdateInput): Promise<AttributeGroup> {
+    const existing = await prisma.attributeGroup.findUnique({ where: { id } });
+    if (!existing) throw AppError.notFound('Attribute group not found', { id });
     const group = await prisma.attributeGroup.update({ where: { id }, data: input });
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return group;
   },
 
@@ -87,7 +89,7 @@ export const attributeAdminService = {
       });
     }
     await prisma.attributeGroup.delete({ where: { id } });
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
   },
 
   /* --------------------------------------------------------- attributes */
@@ -113,7 +115,7 @@ export const attributeAdminService = {
         ...args,
         ...skipTake(query),
         include: { values: { where: notDeleted, orderBy: { position: 'asc' } } },
-        orderBy: [{ position: 'asc' }, { name: 'asc' }],
+        orderBy: [{ position: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       }),
       prisma.attribute.count(args),
     ]);
@@ -145,7 +147,7 @@ export const attributeAdminService = {
       select: { id: true },
     });
 
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return this.get(created.id);
   },
 
@@ -180,7 +182,7 @@ export const attributeAdminService = {
     }
 
     await updateVersioned(prisma.attribute, 'Attribute', id, version, data);
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes(id);
 
     return this.get(id);
   },
@@ -200,7 +202,7 @@ export const attributeAdminService = {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes(id);
   },
 
   async reorder(input: ReorderInput): Promise<number> {
@@ -209,7 +211,7 @@ export const attributeAdminService = {
         prisma.attribute.update({ where: { id: item.id }, data: { position: item.position } }),
       ),
     );
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return input.items.length;
   },
 
@@ -235,6 +237,7 @@ export const attributeAdminService = {
         attributeId,
         code: input.code,
         label: input.label,
+        description: input.description ?? null,
         position: input.position,
         colorHex: input.colorHex ?? null,
         swatchMediaId: input.swatchMediaId ?? null,
@@ -252,7 +255,7 @@ export const attributeAdminService = {
       });
     }
 
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return value;
   },
 
@@ -288,7 +291,7 @@ export const attributeAdminService = {
       }
     }
 
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes(existing.attributeId);
     return updated;
   },
 
@@ -318,7 +321,7 @@ export const attributeAdminService = {
       });
     }
 
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
   },
 
   /* -------------------------------------------------- category mapping */
@@ -360,7 +363,7 @@ export const attributeAdminService = {
       },
     });
 
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
     return link;
   },
 
@@ -379,6 +382,6 @@ export const attributeAdminService = {
     }
 
     await prisma.categoryAttribute.deleteMany({ where: { categoryId, attributeId } });
-    await catalogCacheService.invalidateAttributes();
+    await catalogCacheService.invalidateAttributes('structure');
   },
 };

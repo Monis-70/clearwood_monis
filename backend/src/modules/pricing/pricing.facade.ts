@@ -1,6 +1,7 @@
 import type { PricingChannel, ShippingMethod } from '@shared/enums';
 import type {
   CouponValidationResult,
+  LineBreakdown,
   PriceBreakdown,
   PriceRequest,
   PricingSimulation,
@@ -36,6 +37,8 @@ export interface QuoteInput {
   customerId?: string | null;
   customerGroupId?: string | null;
   now?: Date;
+  /** See LoadContextInput.reachableOnly: set by the public quote endpoints. */
+  reachableOnly?: boolean;
 }
 
 function toLoadInput(input: QuoteInput, now: Date): LoadContextInput {
@@ -54,6 +57,7 @@ function toLoadInput(input: QuoteInput, now: Date): LoadContextInput {
     pincode: input.pincode ?? null,
     channel: input.channel ?? 'WEB',
     now,
+    ...(input.reachableOnly ? { reachableOnly: true } : {}),
   };
 }
 
@@ -113,6 +117,35 @@ export const pricingFacade = {
     );
 
     return breakdown;
+  },
+
+  /**
+   * Catalog pricing: every item priced as if it were bought on its own, from ONE context load.
+   *
+   * A grid, an option matrix or the listing index must not let one card's price depend on which
+   * other cards share the request - through `quoteCart` every line would see `cartItemCount` equal
+   * to the page size. The context is loaded once for all items (its per-line parts are filtered per
+   * line already), then the pure engine runs once per line, so each result equals `quoteProduct`
+   * for that item alone.
+   */
+  async quoteEach(input: QuoteInput): Promise<LineBreakdown[]> {
+    if (input.items.length === 0) return [];
+
+    const now = input.now ?? new Date();
+    const context = await pricingContextLoader.load(toLoadInput(input, now));
+    const request = toRequest(input, now);
+
+    return context.lines.map((line, index) => {
+      const requestLine = { ...request.lines[index]!, productId: line.productId };
+      const { breakdown } = wrapInvariant(() =>
+        pricingEngine.calculate(
+          { ...context, lines: [line] },
+          { ...request, lines: [requestLine] },
+          { engineVersion: env.PRICING_ENGINE_VERSION },
+        ),
+      );
+      return breakdown.lines[0]!;
+    });
   },
 
   /** Cached by contextHash so a listing page asking for the same price repeatedly is cheap. */

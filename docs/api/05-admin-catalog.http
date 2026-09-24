@@ -157,6 +157,22 @@ Idempotency-Key: demo-matrix-0001
 ### 16. Variants of the product
 GET {{api}}/admin/catalog/products/{{productId}}/variants
 
+### 16a. (Prompt 3) A second variant with the same options is refused, in any pair order:
+### 409 VARIANT_COMBINATION_EXISTS, details.variantId names the holder.
+### A value from another attribute is 422. Concurrent writes may get 409 WRITE_CONFLICT: retry.
+POST {{api}}/admin/catalog/products/{{productId}}/variants
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "sku": "DEMO-DUPLICATE-COMBO",
+  "attributeValues": [{ "attributeId": "{{colourAttributeId}}", "attributeValueId": "VALUE_ID_1" }]
+}
+
+### 16b. Exactly one default per product: this demotes the previous default atomically
+POST {{api}}/admin/catalog/products/{{productId}}/variants/{{variantId}}/set-default
+X-CSRF-Token: {{csrf}}
+
 ###
 @variantId = REPLACE_WITH_VARIANT_ID
 

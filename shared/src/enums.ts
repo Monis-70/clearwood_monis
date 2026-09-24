@@ -500,10 +500,26 @@ export const CATEGORY_KINDS = [
   'MAKE_YOUR_OWN',
   'NEW_ARRIVALS',
   'INTERIOR_SOLUTION',
+  // A service line (contract work): discovered in the catalog, requested through an enquiry.
+  'SERVICE',
 ] as const;
 export type CategoryKind = (typeof CATEGORY_KINDS)[number];
 export const CategoryKind = enumFrom(CATEGORY_KINDS);
 export const isCategoryKind = guard(CATEGORY_KINDS);
+
+/**
+ * Kinds whose listing also admits products by a merchandising fact, not only by an explicit link:
+ * within the parent category's subtree (the whole catalog for a root), a NEW_ARRIVALS node lists
+ * new arrivals, SPECIAL_COLLECTION the special-collection products, MAKE_YOUR_OWN the customisable
+ * ones. Explicit links still count, so an admin can always add a product by hand.
+ */
+export const RULE_CATEGORY_KINDS = [
+  'NEW_ARRIVALS',
+  'SPECIAL_COLLECTION',
+  'MAKE_YOUR_OWN',
+] as const satisfies readonly CategoryKind[];
+export type RuleCategoryKind = (typeof RULE_CATEGORY_KINDS)[number];
+export const isRuleCategoryKind = guard(RULE_CATEGORY_KINDS);
 
 export const PRODUCT_TYPES = [
   'SIMPLE',
@@ -521,10 +537,58 @@ export type ProductStatus = (typeof PRODUCT_STATUSES)[number];
 export const ProductStatus = enumFrom(PRODUCT_STATUSES);
 export const isProductStatus = guard(PRODUCT_STATUSES);
 
+/** Derived for the admin list: SCHEDULED is ACTIVE with a publishedAt still in the future. */
+export const PUBLICATION_STATES = ['DRAFT', 'SCHEDULED', 'LIVE', 'ARCHIVED'] as const;
+export type PublicationState = (typeof PUBLICATION_STATES)[number];
+export const PublicationState = enumFrom(PUBLICATION_STATES);
+export const isPublicationState = guard(PUBLICATION_STATES);
+
+/**
+ * Badges a card may carry. Which ones show, and their words, come from the `catalog.badges`
+ * setting; CUSTOM is the product's own `badgeText`. Nothing renders a badge word from code.
+ */
+export const PRODUCT_BADGE_CODES = [
+  'CUSTOM',
+  'NEW_ARRIVAL',
+  'SALE',
+  'BEST_SELLER',
+  'FEATURED',
+  'SPECIAL_COLLECTION',
+  'MADE_TO_ORDER',
+  'CUSTOMIZABLE',
+  'IN_HOUSE',
+] as const;
+export type ProductBadgeCode = (typeof PRODUCT_BADGE_CODES)[number];
+export const ProductBadgeCode = enumFrom(PRODUCT_BADGE_CODES);
+export const isProductBadgeCode = guard(PRODUCT_BADGE_CODES);
+
 export const VISIBILITIES = ['PUBLIC', 'HIDDEN', 'SEARCH_ONLY', 'CATALOG_ONLY'] as const;
 export type Visibility = (typeof VISIBILITIES)[number];
 export const Visibility = enumFrom(VISIBILITIES);
 export const isVisibility = guard(VISIBILITIES);
+
+/*
+ * Where each visibility may appear on the storefront (PROJECT_CONTEXT §45, "Visibility"). Every
+ * storefront path ALSO requires status ACTIVE, deletedAt NULL and publishedAt NULL or in the past.
+ *   REACHABLE  the product's own page, slug resolution, options, gallery, price, a card wherever it
+ *              is linked explicitly (related, recently viewed, wishlist, CMS, batch), the cart
+ *   BROWSE     category, collection, curated and whole-catalog listings, and their facets
+ *   SEARCH     search results (a listing with `q`), autocomplete and the search index
+ * HIDDEN is none of them.
+ */
+export const REACHABLE_VISIBILITIES = [
+  'PUBLIC',
+  'CATALOG_ONLY',
+  'SEARCH_ONLY',
+] as const satisfies readonly Visibility[];
+export const BROWSE_VISIBILITIES = [
+  'PUBLIC',
+  'CATALOG_ONLY',
+] as const satisfies readonly Visibility[];
+export const SEARCH_VISIBILITIES = [
+  'PUBLIC',
+  'SEARCH_ONLY',
+] as const satisfies readonly Visibility[];
 
 export const STOCK_STATUSES = [
   'IN_STOCK',
@@ -622,6 +686,7 @@ export const MEDIA_USAGE_TYPES = [
   'CATEGORY_BANNER',
   'CATEGORY_MOBILE_BANNER',
   'COLLECTION_BANNER',
+  'COLLECTION_IMAGE',
   'BRAND_LOGO',
   'ATTRIBUTE_SWATCH',
   'ADMIN_AVATAR',
@@ -711,9 +776,12 @@ export const BULK_ACTION_TYPES = [
   'DELETE',
   'RESTORE',
   'MOVE_CATEGORY',
+  'ADD_CATEGORY',
+  'REMOVE_CATEGORY',
   'ASSIGN_COLLECTION',
   'SET_TAX_CLASS',
   'SET_BRAND',
+  'SET_MERCHANDISING',
   'ADJUST_STOCK',
 ] as const;
 export type BulkActionType = (typeof BULK_ACTION_TYPES)[number];
@@ -764,11 +832,20 @@ export type InventoryReason = (typeof INVENTORY_REASONS)[number];
 export const InventoryReason = enumFrom(INVENTORY_REASONS);
 export const isInventoryReason = guard(INVENTORY_REASONS);
 
+/**
+ * How one product relates to another. Stored as a code on ProductRelation (D2), so a new kind of
+ * relation is one more code here, never a table or a migration. FREQUENTLY_BOUGHT is "frequently
+ * bought together"; SIMILAR is mirrored onto the other product automatically.
+ */
 export const PRODUCT_RELATION_TYPES = [
+  'RELATED',
+  'SIMILAR',
+  'ALTERNATIVE',
+  'REPLACEMENT',
+  'COMPLEMENTARY',
+  'FREQUENTLY_BOUGHT',
   'CROSS_SELL',
   'UPSELL',
-  'SIMILAR',
-  'FREQUENTLY_BOUGHT',
   'BUNDLE_ITEM',
   'VARIANT_OF_STYLE',
 ] as const;
@@ -780,6 +857,12 @@ export const SLUG_ENTITY_TYPES = ['PRODUCT', 'CATEGORY', 'COLLECTION', 'PAGE'] a
 export type SlugEntityType = (typeof SLUG_ENTITY_TYPES)[number];
 export const SlugEntityType = enumFrom(SLUG_ENTITY_TYPES);
 export const isSlugEntityType = guard(SLUG_ENTITY_TYPES);
+
+/** An enquiry's life is a note on a lead, not a workflow: any status may follow any other. */
+export const ENQUIRY_STATUSES = ['NEW', 'CONTACTED', 'QUOTED', 'CLOSED', 'SPAM'] as const;
+export type EnquiryStatus = (typeof ENQUIRY_STATUSES)[number];
+export const EnquiryStatus = enumFrom(ENQUIRY_STATUSES);
+export const isEnquiryStatus = guard(ENQUIRY_STATUSES);
 
 /** What a delete does when the row still has dependants. */
 export const DELETE_STRATEGIES = ['BLOCK', 'SOFT', 'REASSIGN_CHILDREN', 'CASCADE_SOFT'] as const;
@@ -817,6 +900,7 @@ export const PRICE_SOURCE_TYPES = [
   'TIER_PRICE',
   'PRICE_ADJUSTMENT',
   'CUSTOMIZATION',
+  'CUSTOMER_GROUP',
   'DISCOUNT_RULE',
   'COUPON',
   'SHIPPING_RATE',

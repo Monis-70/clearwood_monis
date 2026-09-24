@@ -11,7 +11,8 @@
 GET {{baseUrl}}/health
 Accept: application/json
 
-### 2. Readiness — 200 when sqlite + memory cache answer, otherwise 503 with per-dependency detail
+### 2. Readiness — 200 "ready"; 200 "degraded" when only the cache (Redis) is down, since reads
+###    fall back to MySQL; 503 with per-dependency detail only when the database is down
 GET {{baseUrl}}/ready
 Accept: application/json
 

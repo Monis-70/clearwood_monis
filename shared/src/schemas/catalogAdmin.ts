@@ -8,7 +8,9 @@ import {
   IMPORT_ENTITIES,
   IMPORT_STATUSES,
   INVENTORY_REASONS,
+  PRODUCT_BADGE_CODES,
   PRODUCT_RELATION_TYPES,
+  PUBLICATION_STATES,
   RULE_MATCH_MODES,
   SLUG_ENTITY_TYPES,
 } from '../enums';
@@ -79,6 +81,14 @@ const seoFields = {
 
 const nameField = z.string().min(2).max(160);
 const noteField = z.string().max(500).nullish();
+const hexColorField = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a #RRGGBB colour');
+
+/** Lowercase-dashed keys shared by navigation items and categories ("contract-work"). */
+export const leadFormKeySchema = z
+  .string()
+  .min(2)
+  .max(64)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'Use lowercase words joined by dashes');
 
 export const reorderSchema = z.object({
   items: z
@@ -88,6 +98,11 @@ export const reorderSchema = z.object({
 });
 
 export const idsSchema = z.object({ ids: z.array(idSchema).min(1).max(500) });
+
+/** Categories only switch on and off in bulk; anything else is a per-category decision. */
+export const categoryBulkSchema = idsSchema.extend({
+  action: z.enum(['ACTIVATE', 'DEACTIVATE']),
+});
 
 /* ------------------------------------------------------------- categories */
 
@@ -110,6 +125,7 @@ export const categoryCreateSchema = z.object({
   showInMenu: z.boolean().default(true),
   menuColumn: z.number().int().min(1).max(12).nullish(),
   isFeatured: z.boolean().default(false),
+  leadFormKey: leadFormKeySchema.nullish(),
   shortDescription: z.string().max(400).nullish(),
   description: z.string().max(20_000).nullish(),
   iconMediaId: idSchema.nullish(),
@@ -189,6 +205,7 @@ export const attributeValueCreateSchema = z.object({
     .max(64)
     .regex(/^[A-Z0-9][A-Z0-9_-]*$/, 'Use UPPER_SNAKE_CASE'),
   label: z.string().min(1).max(160),
+  description: z.string().max(1_000).nullish(),
   position: z.number().int().min(0).max(10_000).default(0),
   colorHex: z
     .string()
@@ -251,7 +268,10 @@ export const taxClassUpdateSchema = taxClassCreateSchema.partial();
 export const productListQuerySchema = listQuerySchema.extend({
   q: z.string().min(1).max(160).optional(),
   categoryId: idSchema.optional(),
+  collectionId: idSchema.optional(),
   status: productStatusSchema.optional(),
+  publication: z.enum(PUBLICATION_STATES).optional(),
+  visibility: visibilitySchema.optional(),
   brandId: idSchema.optional(),
   taxClassId: idSchema.optional(),
   productType: productTypeSchema.optional(),
@@ -260,10 +280,15 @@ export const productListQuerySchema = listQuerySchema.extend({
   stock: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK', 'ANY']).optional(),
   isFeatured: booleanQuerySchema.optional(),
   isNewArrival: booleanQuerySchema.optional(),
+  isSpecialCollection: booleanQuerySchema.optional(),
+  customizable: booleanQuerySchema.optional(),
+  madeToOrder: booleanQuerySchema.optional(),
   completenessMax: z.coerce.number().int().min(0).max(100).optional(),
   completenessMin: z.coerce.number().int().min(0).max(100).optional(),
   hasMedia: booleanQuerySchema.optional(),
   updatedSince: z.coerce.date().optional(),
+  createdFrom: z.coerce.date().optional(),
+  createdTo: z.coerce.date().optional(),
   includeDeleted: booleanQuerySchema.default(false),
 });
 
@@ -295,9 +320,12 @@ export const productCreateSchema = z.object({
   heightMm: z.number().int().min(0).nullish(),
   seatHeightMm: z.number().int().min(0).nullish(),
   isFeatured: z.boolean().default(false),
+  featuredUntil: z.coerce.date().nullish(),
   isNewArrival: z.boolean().default(false),
   isSpecialCollection: z.boolean().default(false),
   isBestSeller: z.boolean().default(false),
+  badgeText: z.string().trim().min(1).max(40).nullish(),
+  badgeColor: hexColorField.nullish(),
   minOrderQty: z.number().int().min(1).max(999).default(1),
   maxOrderQty: z.number().int().min(1).max(999).nullish(),
   position: z.number().int().min(0).max(100_000).default(0),
@@ -316,6 +344,68 @@ export const productCategoriesSchema = z.object({
   primaryCategoryId: idSchema,
   categoryIds: z.array(idSchema).max(30).default([]),
 });
+
+/** `publishAt` in the future schedules the product; absent or past publishes it now. */
+export const productPublishSchema = z.object({
+  publishAt: z.coerce.date().optional(),
+});
+
+/** The merchandising state a bulk action may set; at least one field. */
+export const merchandisingSchema = z
+  .object({
+    isFeatured: z.boolean().optional(),
+    featuredUntil: z.coerce.date().nullish(),
+    isNewArrival: z.boolean().optional(),
+    isBestSeller: z.boolean().optional(),
+    isSpecialCollection: z.boolean().optional(),
+    badgeText: z.string().trim().min(1).max(40).nullish(),
+    badgeColor: hexColorField.nullish(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Set at least one merchandising field',
+  });
+
+/** A card badge an admin turns on: its words and colour. `null` turns the badge off. */
+const badgeStyleSchema = z
+  .object({ label: z.string().trim().min(1).max(40), color: hexColorField.nullable() })
+  .nullable();
+
+/**
+ * The storefront's catalog settings (AppSetting group `catalog`). Every field optional; a field
+ * left out is not changed. `badges` is merged per code, never replaced wholesale.
+ */
+export const catalogSettingsUpdateSchema = z
+  .object({
+    defaultPageSize: z.number().int().min(1).max(100).optional(),
+    maxPageSize: z.number().int().min(1).max(200).optional(),
+    showOutOfStock: z.boolean().optional(),
+    newArrivalDays: z.number().int().min(0).max(365).optional(),
+    badges: z
+      .object(
+        Object.fromEntries(
+          PRODUCT_BADGE_CODES.filter((code) => code !== 'CUSTOM').map((code) => [
+            code,
+            badgeStyleSchema.optional(),
+          ]),
+        ) as Record<
+          Exclude<(typeof PRODUCT_BADGE_CODES)[number], 'CUSTOM'>,
+          z.ZodOptional<typeof badgeStyleSchema>
+        >,
+      )
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Change at least one setting',
+  })
+  .refine(
+    (value) =>
+      value.defaultPageSize === undefined ||
+      value.maxPageSize === undefined ||
+      value.defaultPageSize <= value.maxPageSize,
+    { message: 'defaultPageSize cannot exceed maxPageSize', path: ['defaultPageSize'] },
+  );
 
 export const productAttributeValuesSchema = z.object({
   values: z
@@ -476,12 +566,13 @@ export const collectionRulesSchema = z.object({
   limit: z.number().int().min(1).max(500).optional(),
 });
 
-export const collectionCreateSchema = z.object({
+const collectionFields = z.object({
   name: nameField,
   slug: slugSchema.optional(),
   type: collectionTypeSchema.default('MANUAL'),
   description: z.string().max(10_000).nullish(),
   rules: collectionRulesSchema.nullish(),
+  imageMediaId: idSchema.nullish(),
   bannerMediaId: idSchema.nullish(),
   mobileBannerMediaId: idSchema.nullish(),
   isActive: z.boolean().default(true),
@@ -492,12 +583,33 @@ export const collectionCreateSchema = z.object({
   seoDescription: z.string().max(400).nullish(),
 });
 
-export const collectionUpdateSchema = collectionCreateSchema
+function windowInOrder(
+  value: { startsAt?: Date | null | undefined; endsAt?: Date | null | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.startsAt && value.endsAt && value.endsAt <= value.startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['endsAt'],
+      message: 'endsAt must be after startsAt',
+    });
+  }
+}
+
+export const collectionCreateSchema = collectionFields.superRefine(windowInOrder);
+
+export const collectionUpdateSchema = collectionFields
   .partial()
-  .extend({ version: versionSchema });
+  .extend({ version: versionSchema })
+  .superRefine(windowInOrder);
 
 export const collectionProductsSchema = z.object({
   productIds: z.array(idSchema).max(1_000).default([]),
+});
+
+/** `includeDeleted`: the trash view, from which a collection is restored. */
+export const adminCollectionListQuerySchema = listQuerySchema.extend({
+  includeDeleted: booleanQuerySchema.default(false),
 });
 
 /* -------------------------------------------------------- price adjustments */
@@ -573,15 +685,19 @@ export const bulkActionSchema = z
     collectionId: idSchema.optional(),
     taxClassId: idSchema.optional(),
     brandId: idSchema.optional(),
+    merchandising: merchandisingSchema.optional(),
     delta: z.number().int().min(-100_000).max(100_000).optional(),
     reason: manualInventoryReasonSchema.optional(),
   })
   .superRefine((value, ctx) => {
     const requires: Partial<Record<(typeof BULK_ACTION_TYPES)[number], keyof typeof value>> = {
       MOVE_CATEGORY: 'categoryId',
+      ADD_CATEGORY: 'categoryId',
+      REMOVE_CATEGORY: 'categoryId',
       ASSIGN_COLLECTION: 'collectionId',
       SET_TAX_CLASS: 'taxClassId',
       SET_BRAND: 'brandId',
+      SET_MERCHANDISING: 'merchandising',
       ADJUST_STOCK: 'delta',
     };
     const required = requires[value.action];
@@ -634,6 +750,7 @@ export type CategoryMoveInput = z.infer<typeof categoryMoveSchema>;
 export type CategoryDeleteQuery = z.infer<typeof categoryDeleteQuerySchema>;
 export type ReorderInput = z.infer<typeof reorderSchema>;
 export type IdsInput = z.infer<typeof idsSchema>;
+export type CategoryBulkInput = z.infer<typeof categoryBulkSchema>;
 
 export type AttributeGroupCreateInput = z.infer<typeof attributeGroupCreateSchema>;
 export type AttributeGroupUpdateInput = z.infer<typeof attributeGroupUpdateSchema>;
@@ -654,6 +771,10 @@ export type AdminProductListQuery = z.infer<typeof productListQuerySchema>;
 export type ProductCreateInput = z.infer<typeof productCreateSchema>;
 export type ProductUpdateInput = z.infer<typeof productUpdateSchema>;
 export type ProductCategoriesInput = z.infer<typeof productCategoriesSchema>;
+export type ProductPublishInput = z.infer<typeof productPublishSchema>;
+export type MerchandisingInput = z.infer<typeof merchandisingSchema>;
+export type AdminCollectionListQuery = z.infer<typeof adminCollectionListQuerySchema>;
+export type CatalogSettingsUpdateInput = z.infer<typeof catalogSettingsUpdateSchema>;
 export type ProductAttributeValuesInput = z.infer<typeof productAttributeValuesSchema>;
 export type ProductRelationsInput = z.infer<typeof productRelationsSchema>;
 export type ProductDuplicateInput = z.infer<typeof productDuplicateSchema>;

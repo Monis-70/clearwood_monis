@@ -55,35 +55,35 @@ npm run dev          # API + storefront + admin, all three at once
 
 ## Endpoints so far
 
-| Endpoint                                                                                               | Purpose                                                                           |
-| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `GET /health`                                                                                          | liveness — touches no dependency                                                  |
-| `GET /ready`                                                                                           | readiness — `SELECT 1` + cache ping; 503 with per-dependency detail when degraded |
-| `GET /api/v1/version`                                                                                  | app name, version, env and the **active driver** for each dependency              |
-| `GET /api/v1/settings/public`                                                                          | flat key/value map of every public `AppSetting` (optional `?group=`)              |
-| `GET /api/v1/catalog/categories/tree`                                                                  | the whole category tree, nested (`?depth=`, `?includeInactive=`)                  |
-| `GET /api/v1/catalog/categories/:slug`                                                                 | one category with breadcrumbs, children and **inherited** attributes              |
-| `GET /api/v1/catalog/attributes`                                                                       | attribute dictionary, paginated (`?categorySlug=`, `?filterableOnly=`)            |
-| `GET /api/v1/navigation/:key`                                                                          | a whole menu — `MAIN`, `FOOTER_PRIMARY`, `FOOTER_SECONDARY`, `MOBILE`, `TOP_BAR`  |     | `POST /api/v1/admin/auth/login` | admin realm sign-in — sets `cw_adm_*` cookies |
-| `… /admin/auth/{refresh,logout,logout-all,me,change-password,forgot-password,reset-password,sessions}` | admin session management                                                          |
-| `… /admin/{users,roles,permissions,audit-logs}`                                                        | permission-gated RBAC administration                                              |
-| `GET /api/v1/admin/catalog/categories`                                                                 | guard-chain proof — reuses the Prompt 2 category service                          |
-| `POST /api/v1/auth/{register,login,otp/request,otp/verify}`                                            | storefront sign-up and sign-in (password or OTP)                                  |
-| `… /auth/{refresh,logout,me,change-password,forgot-password,reset-password,email/*}`                   | storefront session management                                                     |     | `GET /docs`                     | branded Swagger UI                            |
-| `POST /api/v1/admin/media/upload`                                                                      | multipart upload — validates, stores, generates renditions, dedupes               |
-| `… /admin/media/{config,gc,bulk-delete,:id,:id/replace,:id/reprocess,:id/restore,:id/permanent}`       | the media library (permission-gated by `media.asset.*`)                           |
-| `… /admin/media-folders`                                                                               | the media folder tree; system folders are protected                               |
-| `… /admin/products/:productId/media`                                                                   | attach / update / reorder / detach product imagery                                |
-| `GET /api/v1/catalog/products/:slug/gallery`                                                           | public, resolved gallery (`?variantId=`, `?attributeValueId=`, `?device=`)        |
-| `GET /media-signed/*`                                                                                  | HMAC-verified private asset delivery (the local stand-in for a presigned GET)     |
-| `… /admin/catalog/categories{,/tree,/:id,/:id/move,/reorder,/:id/delete-impact}`                       | category CRUD, tree moves and delete-impact previews                              |
-| `… /admin/catalog/{attribute-groups,attributes,attribute-values}`                                      | the attribute dictionary, with in-use guards                                      |
-| `… /admin/catalog/{brands,tax-classes,collections,price-adjustments}`                                  | supporting catalog entities (tax classes sit on `pricing.tax.*`)                  |
-| `… /admin/catalog/products{,/:id,/:id/duplicate,/:id/publish,/:id/publish-blockers}`                   | product CRUD, duplication and the publish gate                                    |
-| `… /admin/catalog/products/:id/variants{,/matrix/preview,/matrix/generate}`                            | variant CRUD and the variant matrix                                               |
-| `… /admin/catalog/variants/:id/inventory{,/adjust}`                                                    | ledger-backed stock history and adjustments                                       |
-| `… /admin/catalog/{bulk,import/:entity,import/jobs,export/:entity}`                                    | bulk actions and CSV import/export                                                |
-| `GET /openapi.json`                                                                                    | generated OpenAPI 3.0 document                                                    |
+| Endpoint                                                                                               | Purpose                                                                                         |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `GET /health`                                                                                          | liveness — touches no dependency                                                                |
+| `GET /ready`                                                                                           | readiness — `SELECT 1` + cache ping; 503 only when the DB is down (cache down = 200 `degraded`) |
+| `GET /api/v1/version`                                                                                  | app name, version, env and the **active driver** for each dependency                            |
+| `GET /api/v1/settings/public`                                                                          | flat key/value map of every public `AppSetting` (optional `?group=`)                            |
+| `GET /api/v1/catalog/categories/tree`                                                                  | the whole category tree, nested (`?depth=`, `?includeInactive=`)                                |
+| `GET /api/v1/catalog/categories/:slug`                                                                 | one category with breadcrumbs, children and **inherited** attributes                            |
+| `GET /api/v1/catalog/attributes`                                                                       | attribute dictionary, paginated (`?categorySlug=`, `?filterableOnly=`)                          |
+| `GET /api/v1/navigation/:key`                                                                          | a whole menu — `MAIN`, `FOOTER_PRIMARY`, `FOOTER_SECONDARY`, `MOBILE`, `TOP_BAR`                |     | `POST /api/v1/admin/auth/login` | admin realm sign-in — sets `cw_adm_*` cookies |
+| `… /admin/auth/{refresh,logout,logout-all,me,change-password,forgot-password,reset-password,sessions}` | admin session management                                                                        |
+| `… /admin/{users,roles,permissions,audit-logs}`                                                        | permission-gated RBAC administration                                                            |
+| `GET /api/v1/admin/catalog/categories`                                                                 | guard-chain proof — reuses the Prompt 2 category service                                        |
+| `POST /api/v1/auth/{register,login,otp/request,otp/verify}`                                            | storefront sign-up and sign-in (password or OTP)                                                |
+| `… /auth/{refresh,logout,me,change-password,forgot-password,reset-password,email/*}`                   | storefront session management                                                                   |     | `GET /docs`                     | branded Swagger UI                            |
+| `POST /api/v1/admin/media/upload`                                                                      | multipart upload — validates, stores, generates renditions, dedupes                             |
+| `… /admin/media/{config,gc,bulk-delete,:id,:id/replace,:id/reprocess,:id/restore,:id/permanent}`       | the media library (permission-gated by `media.asset.*`)                                         |
+| `… /admin/media-folders`                                                                               | the media folder tree; system folders are protected                                             |
+| `… /admin/products/:productId/media`                                                                   | attach / update / reorder / detach product imagery                                              |
+| `GET /api/v1/catalog/products/:slug/gallery`                                                           | public, resolved gallery (`?variantId=`, `?attributeValueId=`, `?device=`)                      |
+| `GET /media-signed/*`                                                                                  | HMAC-verified private asset delivery (the local stand-in for a presigned GET)                   |
+| `… /admin/catalog/categories{,/tree,/:id,/:id/move,/reorder,/:id/delete-impact}`                       | category CRUD, tree moves and delete-impact previews                                            |
+| `… /admin/catalog/{attribute-groups,attributes,attribute-values}`                                      | the attribute dictionary, with in-use guards                                                    |
+| `… /admin/catalog/{brands,tax-classes,collections,price-adjustments}`                                  | supporting catalog entities (tax classes sit on `pricing.tax.*`)                                |
+| `… /admin/catalog/products{,/:id,/:id/duplicate,/:id/publish,/:id/publish-blockers}`                   | product CRUD, duplication and the publish gate                                                  |
+| `… /admin/catalog/products/:id/variants{,/matrix/preview,/matrix/generate}`                            | variant CRUD and the variant matrix                                                             |
+| `… /admin/catalog/variants/:id/inventory{,/adjust}`                                                    | ledger-backed stock history and adjustments                                                     |
+| `… /admin/catalog/{bulk,import/:entity,import/jobs,export/:entity}`                                    | bulk actions and CSV import/export                                                              |
+| `GET /openapi.json`                                                                                    | generated OpenAPI 3.0 document                                                                  |
 
 ---
 
@@ -259,7 +259,7 @@ Expected tail of the seed:
 ```
 [seed:permissions]    86 permissions upserted (15 dangerous)
 [seed:roles]          5 roles upserted (SUPER_ADMIN=86, ADMIN=79, CATALOG_MANAGER=36, ORDER_MANAGER=15, CONTENT_MANAGER=24)
-[seed:admin-user]     bootstrap SUPER_ADMIN created (admin@clearwood.local) — must change password on first login
+[seed:admin-user]     bootstrap ADMIN created (admin@clearwood.local) — must change password on first login
 [seed:demo-customers] 3 demo customers upserted
 ```
 
@@ -269,7 +269,7 @@ Expected tail of the seed:
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Open `/` while signed out                               | redirected to `/login`                                                                           |
 | Sign in with `admin@clearwood.local` / `ChangeMe@12345` | redirected to `/change-password` (the seeded account must change it)                             |
-| Set a new password (min 10 chars)                       | lands on the dashboard showing your name, `SUPER_ADMIN` and **86** permissions                   |
+| Set a new password (min 10 chars)                       | lands on the dashboard showing your name, `ADMIN` and **79** permissions                         |
 | Refresh the page                                        | still signed in — the session comes from the httpOnly cookie, not from storage                   |
 | DevTools → Application → Local/Session Storage          | **empty** — no token is ever stored there                                                        |
 | DevTools → Cookies                                      | `cw_adm_at` and `cw_adm_rt` are `HttpOnly`, `Path=/api/v1/admin`; only `cw_adm_csrf` is readable |
@@ -283,25 +283,37 @@ curl -i -c cookies.txt -X POST http://localhost:7180/api/v1/admin/auth/login `
   -H "Content-Type: application/json" `
   -d '{\"email\":\"admin@clearwood.local\",\"password\":\"ChangeMe@12345\"}'
 
-# guard chain: authenticate(ADMIN) + requirePermission(catalog.category.read)
+# the bootstrap ADMIN must change its password first: until then -> 403 PASSWORD_CHANGE_REQUIRED
+curl -b cookies.txt "http://localhost:7180/api/v1/admin/catalog/categories?depth=1"
+
+# change it (a cookie-authenticated POST echoes the readable cw_adm_csrf cookie)
+curl -b cookies.txt -X POST http://localhost:7180/api/v1/admin/auth/change-password `
+  -H "Content-Type: application/json" -H "X-CSRF-Token: <value of cw_adm_csrf>" `
+  -d '{\"currentPassword\":\"ChangeMe@12345\",\"newPassword\":\"<a new password>\"}'
+
+# guard chain: authenticate(ADMIN) + requirePermission(catalog.category.read) -> 200 now
 curl -b cookies.txt "http://localhost:7180/api/v1/admin/catalog/categories?depth=1"
 
 # anonymous -> 401 NOT_AUTHENTICATED
 curl -i "http://localhost:7180/api/v1/admin/catalog/categories"
 ```
 
-| Check                                   | Expectation                                                                         |
-| --------------------------------------- | ----------------------------------------------------------------------------------- |
-| Login body                              | contains `tokens.accessToken` but **never** `refreshToken`                          |
-| Cookies                                 | `cw_adm_at`, `cw_adm_rt` (HttpOnly), `cw_adm_csrf` (readable)                       |
-| Wrong password vs unknown email         | byte-identical `401 INVALID_CREDENTIALS` bodies                                     |
-| 5 bad logins                            | 6th returns `ACCOUNT_LOCKED`; `LoginAttempt` rows written                           |
-| Customer token on an admin route        | `401 TOKEN_INVALID` (and vice-versa)                                                |
-| `CATALOG_MANAGER` → `POST /admin/roles` | `403 FORBIDDEN` + an audited `PERMISSION_DENIED` row                                |
-| Role change                             | `permissionVersion` bumps and the previous access token returns `401 TOKEN_EXPIRED` |
-| Cookie-auth POST without `X-CSRF-Token` | `403 CSRF_TOKEN_INVALID`; Bearer requests are exempt                                |
-| Replayed refresh cookie                 | `401 TOKEN_REUSE` and the whole family is revoked                                   |
-| OTP request (development)               | response carries `devCode`, so the flow is testable with no SMS provider            |
+| Check                                    | Expectation                                                                                               |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Login body                               | contains `tokens.accessToken` but **never** `refreshToken`                                                |
+| Cookies                                  | `cw_adm_at`, `cw_adm_rt` (HttpOnly), `cw_adm_csrf` (readable)                                             |
+| Wrong password vs unknown email          | byte-identical `401 INVALID_CREDENTIALS` bodies                                                           |
+| 5 bad logins                             | 6th returns `ACCOUNT_LOCKED`; `LoginAttempt` rows written                                                 |
+| Customer token on an admin route         | `401 TOKEN_INVALID` (and vice-versa)                                                                      |
+| `CATALOG_MANAGER` → `POST /admin/roles`  | `403 FORBIDDEN` + an audited `PERMISSION_DENIED` row                                                      |
+| Role change                              | `permissionVersion` bumps and the previous access token returns `401 TOKEN_EXPIRED`                       |
+| Cookie-auth POST without `X-CSRF-Token`  | `403 CSRF_TOKEN_INVALID`; Bearer requests are exempt                                                      |
+| Replayed refresh cookie                  | `401 TOKEN_REUSE` and the whole family is revoked                                                         |
+| Bootstrap ADMIN before changing password | `403 PASSWORD_CHANGE_REQUIRED` everywhere except `/auth/me`, `/auth/sessions`, change-password and logout |
+| `ADMIN` creates or grants `SUPER_ADMIN`  | `403 ROLE_NOT_GRANTABLE`; changing a SUPER_ADMIN is `403 ADMIN_USER_NOT_MANAGEABLE`                       |
+| Disabling the last active SUPER_ADMIN    | `403 LAST_SUPER_ADMIN`, even for that SUPER_ADMIN                                                         |
+| SUSPENDED / DISABLED admin               | sign-in, refresh and a live access token are all refused                                                  |
+| OTP request (development)                | response carries `devCode`, so the flow is testable with no SMS provider                                  |
 
 The full request collection is in [docs/api/03-auth.http](docs/api/03-auth.http) — it runs top to
 bottom and covers the admin login, the guard chain, a 403, the customer OTP flow, refresh and logout.
@@ -616,6 +628,126 @@ bottom and includes the whole admin walkthrough.
 
 ---
 
+## Redis foundation — verification
+
+Nothing here is needed for local development: `CACHE_DRIVER=memory` remains the default. To try
+the shared cache locally, run any Redis 7 on the reserved port 6380, for example
+`docker run -d --name clearwood-redis -p 127.0.0.1:6380:6379 redis:7.4-alpine`.
+
+```powershell
+npm run lint; npm run typecheck --workspace backend; npm run check
+cd backend; npx vitest run                                   # Redis suites report as skipped
+$env:CLEARWOOD_TEST_REDIS_URL="redis://127.0.0.1:6380"        # localhost only
+npx vitest run tests/redis-integration.test.ts tests/redis-app.test.ts
+```
+
+| Do this                                                                                        | You should see                                               |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `CACHE_DRIVER=redis`, `REDIS_URL=redis://127.0.0.1:6380`, `GET /ready`                         | `status: ready`, cache `driver: redis`, `up`                 |
+| Stop Redis, `GET /ready`                                                                       | HTTP 200, `status: degraded`; the storefront keeps answering |
+| Start Redis again                                                                              | a `redis ready` log line; `/ready` back to `ready`           |
+| `GET /api/v1/catalog/products/<slug>`, then `redis-cli -p 6380 --scan --pattern 'cw:sf:pdp:*'` | the cached product page                                      |
+| Edit that product in the admin, scan again                                                     | no keys: every worker rebuilds it from MySQL                 |
+| `TRUST_PROXY=true` and start the API                                                           | `Invalid environment configuration` naming `TRUST_PROXY`     |
+
+---
+
+## Prompt 3 (catalog integrity) — verification
+
+```powershell
+cd backend
+npx vitest run tests/catalog-integrity.test.ts tests/catalog-integrity-migration.test.ts tests/cache-driver.test.ts tests/cache-invalidation.test.ts tests/query-budgets.test.ts
+$env:CLEARWOOD_CATALOG_BASELINE="1"; npx vitest run tests/catalog-scale-baseline.test.ts   # prints [scale] timings + EXPLAIN
+```
+
+| Do this                                                    | You should see                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Create two variants with the same options (any order)      | second is 409 `VARIANT_COMBINATION_EXISTS`                                                  |
+| `set-default` on two variants at once                      | exactly one `isDefault` row afterwards                                                      |
+| Soft-delete a product, create a new one with the same name | the new product gets the original slug                                                      |
+| Restore the deleted one                                    | it gets `<slug>-2`                                                                          |
+| Edit a product image                                       | only that product's `sf:pdp:<slug>:*` keys, listings, suggestions and CMS pages are dropped |
+
+---
+
+## Prompt 4 (storefront listing) — verification
+
+```powershell
+cd backend
+npx vitest run tests/storefront-listing.test.ts tests/storefront-api.test.ts tests/query-budgets.test.ts tests/search.test.ts
+$env:CLEARWOOD_LISTING_BENCHMARK="1"; npx vitest run tests/catalog-listing-benchmark.test.ts   # [bench] lines: wall, queries, db time, rows read, bytes
+```
+
+| Do this                                                                     | You should see                                                                                     |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/catalog/products?categorySlug=sofas&includeFacets=false` twice | the second answer served from `sf:list:grid:anon:*`                                                |
+| Change a variant price in the admin, then `sort=PRICE_ASC`                  | the card shows the new price at once; its position follows once `ProductListingIndex` is refreshed |
+| Set `catalog.show_out_of_stock` to `false`                                  | out-of-stock products disappear from every grid                                                    |
+| `GET /api/v1/catalog/filters?categorySlug=sofas`                            | facets from SQL aggregates only (about 6 queries on the seed)                                      |
+
+## Prompt 5 (catalog correctness) — verification
+
+```powershell
+cd backend
+npx vitest run tests/catalog-correctness.test.ts tests/listing-index-migration.test.ts tests/storefront-listing.test.ts
+npm run listing:reconcile          # one leased pass: {"ran":true,"windows":…,"repriced":…,…}
+$env:CLEARWOOD_LISTING_BENCHMARK="1"; $env:CLEARWOOD_LISTING_BENCHMARK_PRODUCTS="50000"; $env:CLEARWOOD_LISTING_BENCHMARK_REBUILD="1"
+npx vitest run tests/catalog-listing-benchmark.test.ts
+```
+
+| Do this                                                             | You should see                                                                                                                 |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Set a product `CATALOG_ONLY`, then `SEARCH_ONLY`                    | CATALOG_ONLY: in its category and its page, absent from `/search`; SEARCH_ONLY: the reverse for listings, its page still opens |
+| `POST /api/v1/catalog/products/batch` with a draft's id             | the draft is not in the answer                                                                                                 |
+| Give a customer group `discountBp: 1000`, sign in as a member       | cards, PDP and `/pricing/quote` show 10% off, with one `CUSTOMER_GROUP` component; `pricingBasis` names the group              |
+| Create a price rule starting in two minutes, wait, `sort=PRICE_ASC` | within `LISTING_RECONCILE_INTERVAL_SECONDS` of its start the order follows the new price, with no admin write                  |
+| `npm run listing:reconcile` twice at once                           | one prints `"ran":true`, the other `"ran":false` (or both true, one after the other - never overlapping)                       |
+| Reserve the last unit of a variant                                  | it leaves `inStockOnly` grids at once; a release brings it back                                                                |
+| A grid page's `image.sources`                                       | SMALL and MEDIUM renditions only; the PDP gallery keeps every rendition                                                        |
+
+## Dynamic catalog + admin catalog management — verification
+
+```powershell
+cd backend
+npx vitest run tests/catalog-management.test.ts tests/seed-idempotency.test.ts tests/catalog.test.ts
+npm run db:seed                    # twice: the second run creates nothing and changes nothing
+```
+
+Requests in `docs/api/05b-catalog-management.http`.
+
+| Do this                                                                  | You should see                                                                                                                      |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Deactivate `sofas` in the admin                                          | the whole Sofas subtree leaves the tree, menus, listings, search and category pages; reactivating brings back exactly what was live |
+| `PUT /admin/catalog/settings` `{"newArrivalDays": 7}`                    | `/catalog/products?categorySlug=new-arrivals` shrinks to the last week's launches plus flagged products, no cache flush             |
+| Publish a product with a `publishAt` two minutes ahead                   | `publication: SCHEDULED` in the admin list; within a reconcile interval of that time it lists, searches and shows its badges        |
+| `SET_MERCHANDISING` with `featuredUntil` in the past                     | its search boost and FEATURED badge drop at the next reconcile pass                                                                 |
+| Reorder `/admin/catalog/categories/:id/products`                         | `sort=CURATED` on that category follows the new order at once                                                                       |
+| `POST /api/v1/enquiries` with `formKey: contract-work`                   | 201 with a reference; the enquiry is in `/admin/enquiries`, never in an order                                                       |
+| Re-run the seed after moving, deactivating or deleting a seeded category | every admin change is still there; nothing deleted comes back                                                                       |
+
+## Catalog hardening — verification
+
+```powershell
+cd backend
+npx vitest run tests/catalog-hardening.test.ts tests/seed-idempotency.test.ts
+npm run db:seed                    # after editing a tax rate and deleting a menu item: both stay as you left them
+```
+
+Requests in `docs/api/05c-catalog-hardening.http`.
+
+| Do this                                                                                | You should see                                                                                     |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Change a tax class rate or the default customer group, delete a menu item, re-seed     | the rate, the single default and the deletion all survive; nothing is re-created                   |
+| Import a PRODUCT CSV that changes a price and a category                               | listing, PDP, search and category counts follow at once; menus and settings caches are not dropped |
+| `PUT /admin/catalog/products/:id/relations` with the same product twice under one type | 422, `details.repeated`; a deleted product is refused too                                          |
+| Open that product's PDP                                                                | `relationGroups` in type order; hidden or draft targets never appear                               |
+| `GET /catalog/products/:slug/related?type=ALTERNATIVE` with none curated               | `[]` - never the category fallback                                                                 |
+| File a product under `custom-hotel-furniture`                                          | 422 `CATEGORY_NOT_PURCHASABLE` (admin, bulk and import alike)                                      |
+| `GET /catalog/categories/contract-based-work/landing`                                  | `category.kind: SERVICE`, `leadFormKey: contract-work`, no products                                |
+| Turn the SALE badge off in catalog settings                                            | it leaves cards, the PDP, search results and cached CMS product blocks at once                     |
+
+---
+
 ## Repository layout
 
 ```
@@ -674,3 +806,4 @@ untouched — only `backend/.env` changes.
 | `Invalid environment configuration` on boot                           | the message lists every offending key; compare with `backend/.env.example`                                                                                          |
 | `prisma generate` fails with `unable to get local issuer certificate` | corporate TLS interception — run installs with `$env:NODE_OPTIONS="--use-system-ca"` (Node 20+ with a system CA store) or set `NODE_EXTRA_CA_CERTS` to your root CA |
 | `npm install` reports skipped install scripts                         | run `npm approve-scripts --allow-scripts-pending` (npm 11+) so Prisma and esbuild can fetch their binaries                                                          |
+| `/ready` says `degraded`                                              | Redis is unreachable; reads are served from MySQL and rate limits count per process until it returns — check `REDIS_URL`                                            |

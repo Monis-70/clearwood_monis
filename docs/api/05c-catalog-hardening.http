@@ -1,0 +1,141 @@
+### ClearWood Furnitures — Catalog hardening (relationships, contract work, scoped imports)
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+### Nothing here needs a deploy: relations, categories and imports are data an admin changes.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+
+### 1. Sign in (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@clearwood.local",
+  "password": "ChangeMe@12345"
+}
+
+###
+@csrf = {{adminLogin.response.headers.$['set-cookie'][2]}}
+
+# @name twoProducts
+GET {{api}}/admin/catalog/products?publication=LIVE&limit=3
+
+###
+@hostId = {{twoProducts.response.body.data.0.id}}
+@hostSlug = {{twoProducts.response.body.data.0.slug}}
+@otherId = {{twoProducts.response.body.data.1.id}}
+@thirdId = {{twoProducts.response.body.data.2.id}}
+
+### ------------------------------------------------------------ relationships
+
+### 2. Replace the host's curated relations. One product may appear under several types; the
+###    order inside a type is `position`. SIMILAR is mirrored onto the other product.
+PUT {{api}}/admin/catalog/products/{{hostId}}/relations
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "relations": [
+    { "relatedProductId": "{{otherId}}", "type": "RELATED", "position": 0 },
+    { "relatedProductId": "{{thirdId}}", "type": "ALTERNATIVE", "position": 0 },
+    { "relatedProductId": "{{otherId}}", "type": "COMPLEMENTARY", "position": 1 },
+    { "relatedProductId": "{{thirdId}}", "type": "FREQUENTLY_BOUGHT", "position": 0 },
+    { "relatedProductId": "{{otherId}}", "type": "SIMILAR", "position": 0 }
+  ]
+}
+
+### 3. 422: the same product twice under one type (details.repeated lists the pairs)
+PUT {{api}}/admin/catalog/products/{{hostId}}/relations
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "relations": [
+    { "relatedProductId": "{{otherId}}", "type": "RELATED", "position": 0 },
+    { "relatedProductId": "{{otherId}}", "type": "RELATED", "position": 1 }
+  ]
+}
+
+### 4. 422: a product cannot relate to itself (a deleted target is refused the same way)
+PUT {{api}}/admin/catalog/products/{{hostId}}/relations
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "relations": [{ "relatedProductId": "{{hostId}}", "type": "RELATED" }] }
+
+### 5. The PDP: relationGroups in type order, then related / frequentlyBoughtTogether as before.
+###    Hidden, draft, scheduled and deleted products never appear in any of them.
+GET {{api}}/catalog/products/{{hostSlug}}
+
+### 6. Exactly one curated type; an empty list when none is curated (never the category fallback)
+GET {{api}}/catalog/products/{{hostSlug}}/related?type=ALTERNATIVE
+
+### 7. Without a type: every curated type except FREQUENTLY_BOUGHT, else the category's best sellers
+GET {{api}}/catalog/products/{{hostSlug}}/related
+
+### ------------------------------------------------------------ contract work
+
+### 8. The tree says which categories are service lines and which form they open
+GET {{api}}/catalog/categories/tree
+
+### 9. A service landing: kind SERVICE, leadFormKey "contract-work", no products, children alike
+GET {{api}}/catalog/categories/contract-based-work/landing
+
+# @name serviceCategory
+GET {{api}}/admin/catalog/categories/tree
+
+### 10. 422 CATEGORY_NOT_PURCHASABLE: a product is never filed under a service category
+###     (replace the id with custom-hotel-furniture's id from the tree above)
+PUT {{api}}/admin/catalog/products/{{hostId}}/categories
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "primaryCategoryId": "REPLACE_WITH_SERVICE_CATEGORY_ID", "categoryIds": [] }
+
+### 11. The enquiry itself (rate-limited per client, honeypot `website` stored as SPAM)
+POST {{api}}/enquiries
+Content-Type: application/json
+
+{
+  "formKey": "contract-work",
+  "categorySlug": "custom-hotel-furniture",
+  "name": "Asha Rao",
+  "email": "asha@example.com",
+  "quantity": 40,
+  "details": { "rooms": 40 }
+}
+
+### ------------------------------------------------------------ scoped import invalidation
+
+### 12. A dry run (the default) writes nothing and invalidates nothing
+POST {{api}}/admin/catalog/import/PRODUCT
+X-CSRF-Token: {{csrf}}
+Content-Type: multipart/form-data; boundary=cw
+
+--cw
+Content-Disposition: form-data; name="files"; filename="products.csv"
+Content-Type: text/csv
+
+sku,basePriceRupees
+REPLACE_WITH_A_SKU,12345
+--cw--
+
+### 13. Committed, it drops the product payloads (listings, PDPs, facets, suggestions, CMS pages,
+###     quotes) and re-prices and re-indexes exactly the imported products; navigation, settings,
+###     category-attribute and CMS FAQ/banner caches stay warm. Counts follow a moved category link.
+POST {{api}}/admin/catalog/import/PRODUCT
+X-CSRF-Token: {{csrf}}
+Content-Type: multipart/form-data; boundary=cw
+
+--cw
+Content-Disposition: form-data; name="dryRun"
+
+false
+--cw
+Content-Disposition: form-data; name="files"; filename="products.csv"
+Content-Type: text/csv
+
+sku,basePriceRupees
+REPLACE_WITH_A_SKU,12345
+--cw--

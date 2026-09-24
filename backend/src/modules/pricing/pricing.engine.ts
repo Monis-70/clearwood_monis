@@ -39,7 +39,8 @@ import { resolvePriceList, resolveTier } from './tier.resolver';
  *   3 tier                highest minQty <= qty wins; price replaces, discountBp reduces
  *   4 adjustments         priority, then scope specificity, then id
  *   5 customisation       components supplied by the caller (Prompt 11)
- *   6 unit price          floored at 0; line subtotal = unit x qty
+ *   6 customer group      the group's blanket discountBp, once, on the running unit price
+ *   7 unit price          floored at 0; line subtotal = unit x qty
  *   7 line discounts      auto rules, then the coupon
  *   8 cart level          cart discounts and coupons allocated back proportionally
  *   9 shipping            zone rate, free-above threshold, FREE_SHIPPING coupons
@@ -48,7 +49,7 @@ import { resolvePriceList, resolveTier } from './tier.resolver';
  *  12 invariant           components must sum to the grand total, or we throw
  */
 
-export const ENGINE_VERSION_DEFAULT = 1;
+export const ENGINE_VERSION_DEFAULT = 2;
 
 export class PricingInvariantError extends Error {
   readonly code = 'PRICING_INVARIANT_VIOLATION';
@@ -92,6 +93,10 @@ export function hashContext(context: PricingContext, request: PriceRequest): str
   const payload = JSON.stringify({
     settings: context.settings,
     customerGroup: context.customerGroup?.id ?? null,
+    // Only when set, so every context without a group discount keeps its existing hash.
+    ...(context.customerGroup?.discountBp
+      ? { customerGroupDiscountBp: context.customerGroup.discountBp }
+      : {}),
     channel: context.channel,
     buyerStateCode: context.buyerStateCode,
     pincode: context.pincode,
@@ -342,7 +347,32 @@ function resolveUnitPrice(
     });
   }
 
-  // 6 — never negative
+  // 6 — the customer group's blanket discount (CustomerGroup.discountBp), on the price after
+  // every rule above, exactly once per unit.
+  const group = context.customerGroup;
+  if (group && group.discountBp !== null && group.discountBp > 0) {
+    const delta = -applyBasisPoints(running, group.discountBp);
+    running = Math.max(0, running + delta);
+    components.push({
+      code: `GROUP_${group.code}`,
+      label: `${group.name} price`,
+      kind: 'ADJUSTMENT',
+      amountPaise: delta,
+      sourceType: 'CUSTOMER_GROUP',
+      sourceId: group.id,
+      meta: { discountBp: group.discountBp },
+    });
+    trace.push({
+      step: 'customerGroup',
+      ruleId: group.id,
+      ruleName: group.name,
+      matched: true,
+      amountPaise: delta,
+      runningUnitPaise: running,
+    });
+  }
+
+  // 7 — never negative
   const unitPricePaise = Math.max(0, running);
 
   // The BASE component plus every delta must equal the unit price; correct the BASE if a floor

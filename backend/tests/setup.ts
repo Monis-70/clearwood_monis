@@ -63,6 +63,15 @@ if (dump && adminUrl && run) {
 afterAll(async () => {
   const { closeDrivers } = await import('../src/container');
   const { disconnectPrisma } = await import('../src/config/prisma');
+  const { catalogEvents } = await import('../src/events/catalogEvents');
+  const { listingReconciler } = await import('../src/modules/storefront/listingReconciler.service');
+
+  /*
+   * Drain background work first, as server.ts shutdown does. With a reindex or rebuild still in
+   * flight, DROP DATABASE sat in "Waiting for table metadata lock" past the 60 s hook timeout.
+   */
+  await catalogEvents.settled();
+  await listingReconciler.idle();
 
   // Without this the connection pool and the cache keep the worker alive after the suite ends.
   await closeDrivers();

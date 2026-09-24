@@ -10,6 +10,8 @@ export interface AuthContext {
   permissions: Permission[];
   roles: string[];
   isSuperAdmin: boolean;
+  /** ADMIN realm: the password must be replaced before anything but self-service is allowed. */
+  mustChangePassword: boolean;
   /** Refresh-token family id: the stable session identifier. */
   sessionId: string;
   displayName: string | null;

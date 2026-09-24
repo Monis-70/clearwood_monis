@@ -28,7 +28,8 @@ async function loadAdminContext(claims: AccessTokenClaims): Promise<AuthContext>
   const user = await adminUserRepository.findById(claims.sub);
   if (!user) throw new AppError(401, 'TOKEN_INVALID', 'Account no longer exists');
 
-  if (user.status === 'DISABLED' || user.status === 'SUSPENDED') {
+  // ACTIVE only: DISABLED, SUSPENDED and a not-yet-accepted INVITED account all hold no session.
+  if (user.status !== 'ACTIVE') {
     throw new AppError(401, 'ACCOUNT_DISABLED', 'This account is not active');
   }
   if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
@@ -38,7 +39,7 @@ async function loadAdminContext(claims: AccessTokenClaims): Promise<AuthContext>
     throw new AppError(401, 'TOKEN_EXPIRED', 'Your permissions changed — please sign in again');
   }
 
-  const resolved = await rbacService.resolvePermissions(user.id);
+  const resolved = await rbacService.resolvePermissions(user);
 
   return {
     realm: 'ADMIN',
@@ -48,6 +49,7 @@ async function loadAdminContext(claims: AccessTokenClaims): Promise<AuthContext>
     permissions: resolved.permissions,
     roles: resolved.roles,
     isSuperAdmin: resolved.isSuperAdmin,
+    mustChangePassword: user.mustChangePassword,
     sessionId: claims.sid,
     displayName: user.name,
     email: user.email,
@@ -73,6 +75,7 @@ async function loadCustomerContext(claims: AccessTokenClaims): Promise<AuthConte
     permissions: [] as Permission[],
     roles: [],
     isSuperAdmin: false,
+    mustChangePassword: false,
     sessionId: claims.sid,
     displayName: customer.name,
     email: customer.email,
@@ -87,10 +90,26 @@ export async function resolveAuthContext(req: Request, realm: AuthRealm): Promis
   return realm === 'ADMIN' ? loadAdminContext(claims) : loadCustomerContext(claims);
 }
 
-export function authenticate(realm: AuthRealm): RequestHandler {
+export interface AuthenticateOptions {
+  /**
+   * An admin whose password must be changed (the seeded bootstrap account, an admin-set password)
+   * is refused everywhere by default. Only the self-service routes that let them change it, see
+   * who they are, and end their sessions opt in with this flag.
+   */
+  allowPendingPasswordChange?: boolean;
+}
+
+export function authenticate(realm: AuthRealm, options: AuthenticateOptions = {}): RequestHandler {
   return (req: Request, _res: Response, next: NextFunction): void => {
     resolveAuthContext(req, realm)
       .then((auth) => {
+        if (auth.mustChangePassword && !options.allowPendingPasswordChange) {
+          throw new AppError(
+            403,
+            'PASSWORD_CHANGE_REQUIRED',
+            'Change your password before doing anything else',
+          );
+        }
         req.auth = auth;
         next();
       })

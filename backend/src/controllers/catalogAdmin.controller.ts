@@ -11,13 +11,16 @@ import type {
   BrandCreateInput,
   BrandListQuery,
   BulkActionInput,
+  CatalogSettingsUpdateInput,
   CategoryAttributeUpsertInput,
+  CategoryBulkInput,
   CategoryCreateInput,
   CategoryDeleteQuery,
   CategoryListQuery,
   CategoryMoveInput,
   CategoryUpdateInput,
   CollectionCreateInput,
+  AdminCollectionListQuery,
   CollectionProductsInput,
   CollectionUpdateInput,
   ExportQuery,
@@ -35,6 +38,7 @@ import type {
   ProductCategoriesInput,
   ProductCreateInput,
   ProductDuplicateInput,
+  ProductPublishInput,
   ProductRelationsInput,
   ProductUpdateInput,
   ReorderInput,
@@ -50,6 +54,7 @@ import type { IdParam, ListQuery } from '@shared/schemas/common';
 import { attributeAdminService } from '../modules/catalog-admin/attribute.admin.service';
 import { brandAdminService } from '../modules/catalog-admin/brand.admin.service';
 import { bulkActionService } from '../modules/catalog-admin/bulkAction.service';
+import { catalogSettingsService } from '../modules/catalog-admin/catalogSettings.service';
 import { categoryAdminService } from '../modules/catalog-admin/category.admin.service';
 import { collectionAdminService } from '../modules/catalog-admin/collection.admin.service';
 import { exportService } from '../modules/catalog-admin/import-export/export.service';
@@ -71,6 +76,27 @@ function actorId(req: Request): string | null {
 }
 
 /* ------------------------------------------------------------- categories */
+
+export const adminCatalogSettingsController = {
+  async get(_req: Request, res: Response): Promise<void> {
+    ok(res, await catalogSettingsService.get());
+  },
+
+  async update(req: Request, res: Response): Promise<void> {
+    const before = await catalogSettingsService.get();
+    const updated = await catalogSettingsService.update(req.body as CatalogSettingsUpdateInput);
+
+    void auditService.recordFromRequest(req, {
+      action: 'SETTING_CHANGED',
+      entity: 'AppSetting',
+      entityId: 'catalog',
+      severity: 'NOTICE',
+      changes: auditService.diff({ ...before }, { ...updated }),
+    });
+
+    ok(res, updated);
+  },
+};
 
 export const adminCategoryController = {
   async list(req: Request, res: Response): Promise<void> {
@@ -180,7 +206,7 @@ export const adminCategoryController = {
   },
 
   async bulk(req: Request, res: Response): Promise<void> {
-    const body = req.body as BulkActionInput;
+    const body = req.body as CategoryBulkInput;
     const isActive = body.action === 'ACTIVATE';
     const count = await categoryAdminService.bulkSetActive(body.ids, isActive);
 
@@ -198,6 +224,26 @@ export const adminCategoryController = {
   async redirects(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
     ok(res, await slugRedirectService.listFor('CATEGORY', id));
+  },
+
+  async products(req: Request, res: Response): Promise<void> {
+    const { id } = req.params as unknown as IdParam;
+    const page = await categoryAdminService.listProducts(id, req.query as unknown as ListQuery);
+    paginated(res, page.items, { page: page.page, limit: page.limit, total: page.total });
+  },
+
+  async reorderProducts(req: Request, res: Response): Promise<void> {
+    const { id } = req.params as unknown as IdParam;
+    const count = await categoryAdminService.reorderProducts(id, req.body as ReorderInput);
+
+    void auditService.recordFromRequest(req, {
+      action: 'UPDATE',
+      entity: 'Category',
+      entityId: id,
+      meta: { reorderedProducts: count },
+    });
+
+    ok(res, { reordered: count });
   },
 };
 
@@ -516,14 +562,18 @@ export const adminProductController = {
 
   async publish(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
-    const product = await productAdminService.publish(id);
+    const product = await productAdminService.publish(id, req.body as ProductPublishInput);
 
     void auditService.recordFromRequest(req, {
       action: 'PUBLISH',
       entity: 'Product',
       entityId: id,
       severity: 'NOTICE',
-      meta: { completeness: product.completenessScore },
+      meta: {
+        completeness: product.completenessScore,
+        publishedAt: product.publishedAt,
+        scheduled: product.publication === 'SCHEDULED',
+      },
     });
 
     ok(res, product);
@@ -818,7 +868,9 @@ export const adminInventoryController = {
 
 export const adminCollectionController = {
   async list(req: Request, res: Response): Promise<void> {
-    const page = await collectionAdminService.list(req.query as unknown as ListQuery);
+    const page = await collectionAdminService.list(
+      req.query as unknown as AdminCollectionListQuery,
+    );
     paginated(res, page.items, { page: page.page, limit: page.limit, total: page.total });
   },
 
@@ -838,11 +890,13 @@ export const adminCollectionController = {
 
   async update(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
+    const before = await collectionAdminService.get(id);
     const collection = await collectionAdminService.update(id, req.body as CollectionUpdateInput);
     void auditService.recordFromRequest(req, {
       action: 'UPDATE',
       entity: 'Collection',
       entityId: id,
+      changes: auditService.diff({ ...before }, { ...collection }),
     });
     ok(res, collection);
   },
@@ -859,15 +913,38 @@ export const adminCollectionController = {
     ok(res, { deleted: true });
   },
 
+  async restore(req: Request, res: Response): Promise<void> {
+    const { id } = req.params as unknown as IdParam;
+    const collection = await collectionAdminService.restore(id);
+    void auditService.recordFromRequest(req, {
+      action: 'RESTORE',
+      entity: 'Collection',
+      entityId: id,
+    });
+    ok(res, collection);
+  },
+
   async setProducts(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
     const count = await collectionAdminService.setProducts(id, req.body as CollectionProductsInput);
+    void auditService.recordFromRequest(req, {
+      action: 'UPDATE',
+      entity: 'Collection',
+      entityId: id,
+      meta: { products: count },
+    });
     ok(res, { products: count });
   },
 
   async reorderProducts(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
     const count = await collectionAdminService.reorderProducts(id, req.body as ReorderInput);
+    void auditService.recordFromRequest(req, {
+      action: 'UPDATE',
+      entity: 'Collection',
+      entityId: id,
+      meta: { reordered: count },
+    });
     ok(res, { reordered: count });
   },
 };

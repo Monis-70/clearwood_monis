@@ -8,12 +8,13 @@ end.
 
 ## 0. Prerequisites
 
-| Thing | Version | Why |
-| --- | --- | --- |
-| Ubuntu | 22.04 or 24.04 | what the commands below assume |
-| Node.js | **20 or newer** (`engines.node` is `>=20`) | the app is built and run with it |
-| MySQL | **8.0** | `utf8mb4_0900_*` collations, `SET PERSIST` |
-| pm2 | latest | process manager |
+| Thing   | Version                                    | Why                                                                     |
+| ------- | ------------------------------------------ | ----------------------------------------------------------------------- |
+| Ubuntu  | 22.04 or 24.04                             | what the commands below assume                                          |
+| Node.js | **20 or newer** (`engines.node` is `>=20`) | the app is built and run with it                                        |
+| MySQL   | **8.0**                                    | `utf8mb4_0900_*` collations, `SET PERSIST`                              |
+| Redis   | **7.x**                                    | shared cache and rate limits for the four PM2 workers ([2b](#2b-redis)) |
+| pm2     | latest                                     | process manager                                                         |
 
 `sharp` and `argon2` are **native modules**. They compile against the platform they are installed
 on.
@@ -90,6 +91,59 @@ chmod 600 .env
 Set `NODE_ENV=production` and a real `SITEMAP_BASE_URL`, `WEB_ORIGIN`, `ADMIN_ORIGIN` and
 `CORS_ORIGINS`.
 
+Leave `TRUST_PROXY=false` while the app is reached directly on loopback. When nginx is put in front
+of it on this machine, set `TRUST_PROXY=loopback` - otherwise every shopper shares nginx's IP and
+therefore one rate-limit bucket. Never `true`: the app refuses to boot with it, because it lets any
+client choose its own IP.
+
+---
+
+## 2b. Redis
+
+PM2 runs four workers. With `CACHE_DRIVER=memory` each keeps its own cache and its own rate-limit
+counters: an admin edit reaches the other three only when their entries expire, and every limit is
+effectively four times looser. Production runs `CACHE_DRIVER=redis`.
+
+```bash
+sudo apt-get install -y redis-server
+```
+
+In `/etc/redis/redis.conf` (6380 is the port this project reserves for Redis):
+
+```
+bind 127.0.0.1 -::1
+port 6380
+requirepass <openssl rand -base64 36>
+maxmemory 256mb
+maxmemory-policy allkeys-lru
+save ""
+appendonly no
+```
+
+It is a cache, so it is not persisted: a restart costs a cold cache and fresh rate-limit windows,
+nothing else. Every key the app writes has a TTL. Then `sudo systemctl restart redis-server` and, in
+`backend/.env`:
+
+```
+CACHE_DRIVER=redis
+REDIS_URL=redis://:THE-REDIS-PASSWORD@127.0.0.1:6380/0
+REDIS_KEY_PREFIX=cw:
+```
+
+The URL is never logged. Give each environment sharing one Redis its own `REDIS_KEY_PREFIX`.
+
+**When Redis is down the API keeps serving.** Reads fall back to MySQL, rate limits count per worker
+until it returns, and `/ready` answers `200` with `status: "degraded"` so the workers stay in
+rotation. An invalidation that could not reach Redis is retried when it returns; until then the
+affected keys are treated as misses rather than served stale.
+
+To clear the cache, delete this app's keys only - never `FLUSHALL` or `FLUSHDB`:
+
+```bash
+export REDISCLI_AUTH='THE-REDIS-PASSWORD'   # keeps the password off the process list
+redis-cli -p 6380 --scan --pattern 'cw:*' | xargs -r -n 500 redis-cli -p 6380 unlink
+```
+
 ---
 
 ## 3. The admin credential — read this, do not skip it
@@ -108,13 +162,24 @@ existing credential has to be corrected explicitly.
 
 ### Correct it
 
+Put the NEW password in `backend/.env` as `ADMIN_SEED_PASSWORD` (production refuses to start while
+it is still the placeholder), then reset the existing row by its email:
+
 ```bash
 cd /srv/clearwood/backend
-npm run admin:reset-password
+npm run admin:reset-password -- --email admin@clearwood.local
 ```
 
-Follow the prompts: it takes the email of the account and a new password, and writes a fresh
-argon2 hash.
+The script is non-interactive. It writes a fresh argon2 hash of `ADMIN_SEED_PASSWORD` to that one
+account, sets `mustChangePassword` (every admin route except the self-service ones answers
+`403 PASSWORD_CHANGE_REQUIRED` until the password is changed in the UI), bumps its permission
+version and revokes every session. Without `--email` it targets `ADMIN_SEED_EMAIL`. It prints the
+email only, never the password, and exits non-zero if no such account exists.
+
+Production also refuses to sign in with the published placeholder password, so the old credential
+is unusable from the moment this build is deployed - the reset is what makes the account usable
+again. That row was created by an earlier seed as SUPER_ADMIN and keeps that role; the seed now
+creates an ordinary ADMIN on a fresh install and never touches an existing account.
 
 Change the email too, so the public placeholder address is not an account that exists. From the
 admin UI once you are in, or directly:
@@ -194,6 +259,21 @@ pm2 status
 pm2 logs clearwood-api --lines 50
 ```
 
+### Scheduled work: the listing reconciler
+
+Price rules open and close on their own schedule, with no write to react to, so something has to
+look at the clock (docs/PROJECT_CONTEXT.md §45). By default every worker offers to run the listing
+reconciler every `LISTING_RECONCILE_INTERVAL_SECONDS` (60); a MySQL lease (`MaintenanceTask`) lets
+exactly one of the four do the work, so nothing extra has to be configured.
+
+To keep that work out of the web workers instead, set `LISTING_RECONCILE_INTERVAL_SECONDS=0` and
+schedule the one-shot command - it takes the same lease, so an overlap with a slow run is harmless:
+
+```bash
+# crontab -e (as the deploy user)
+* * * * * cd /srv/clearwood/backend && npm run listing:reconcile >> /var/log/clearwood/reconcile.log 2>&1
+```
+
 ---
 
 ## 7. Verify
@@ -205,9 +285,11 @@ curl -s http://127.0.0.1:7180/ready
 
 `/health` is a liveness probe and answers without touching the database.
 
-`/ready` exercises the dependencies. A healthy response reports `status: "up"` overall and
-`driver: "mysql"` for the database. If the database entry is down, the API is running but cannot
-serve anything — check `DATABASE_URL` and that MySQL is listening on `127.0.0.1:3306`.
+`/ready` exercises the dependencies. A healthy response reports `status: "ready"`, the database
+`up` with `driver: "mysql"`, and the cache `up` with `driver: "redis"`. `status: "degraded"` (still
+HTTP 200) means Redis is down and reads are coming from MySQL - check `REDIS_URL` and
+`systemctl status redis-server`. HTTP 503 means the database is down: the API is running but cannot
+serve anything - check `DATABASE_URL` and that MySQL is listening on `127.0.0.1:3306`.
 
 From your laptop, confirm the API is **not** reachable from outside:
 
@@ -249,13 +331,13 @@ refuses the database named `clearwood_prod` outright — it creates and drops da
 
 ## What is deliberately not configured
 
-| Not configured | Status |
-| --- | --- |
-| Nginx, TLS, DNS | the domain is not available yet; the app is loopback-only until then |
-| Razorpay | `PAYMENT_DRIVER=mock` — no real payment can be taken |
-| SMTP | `MAIL_DRIVER=log` — mail is written to the log, not sent |
-| SMS / OTP | `OTP_DRIVER=log` — the code is logged, not texted |
-| Shiprocket | `SHIPPING_DRIVER=manual`, and the integration is **UNVERIFIED**; production refuses to boot on it without `SHIPPING_PROVIDER_VERIFIED=true` |
-| Demo catalog | production is seeded **structural only**; the homepage has zero blocks by design |
+| Not configured  | Status                                                                                                                                                                                                                        |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nginx, TLS, DNS | the domain is not available yet; the app is loopback-only until then                                                                                                                                                          |
+| Razorpay        | ON HOLD. `PAYMENT_DRIVER=mock`; the live driver also needs `RAZORPAY_ENABLED=true`. In production the mock refuses every signature and checkout offers cash on delivery only                                                  |
+| SMTP            | `MAIL_DRIVER=log` — mail is not sent; in production only the recipient (masked), subject and size are logged, never the body                                                                                                  |
+| SMS / OTP       | `OTP_DRIVER=log` — the code is logged in development only; in production it is neither texted nor logged                                                                                                                      |
+| Shiprocket      | ON HOLD and **UNVERIFIED**. `SHIPPING_DRIVER=manual`; Shiprocket is used only with `SHIPROCKET_ENABLED=true`, its credentials and `SHIPPING_PROVIDER_VERIFIED=true`, otherwise it falls back to manual with a startup warning |
+| Demo catalog    | production is seeded **structural only**; the homepage has zero blocks by design                                                                                                                                              |
 
 `npm run preflight` reports every stub in use, so this table cannot quietly go stale.

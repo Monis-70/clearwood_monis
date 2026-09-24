@@ -4,7 +4,14 @@ import type { ProductCardDto, ProductImageDto, ProductSwatchDto } from '@shared/
 
 import { storage } from '../../container';
 import type { ProductCardRow } from '../../repositories/storefront.repository';
+import { isVariantAvailable } from '../catalog-admin/availability';
 
+import {
+  badgesFor,
+  isFeaturedAt,
+  isNewArrivalAt,
+  type MerchandisingContext,
+} from './merchandising';
 import type { PriceIndexEntry } from './productQuery.service';
 
 /** Shapes a listing row. The price is passed in — nothing here calculates money. */
@@ -64,7 +71,7 @@ function swatches(row: ProductCardRow): ProductSwatchDto[] {
   const byValue = new Map<string, ProductSwatchDto>();
 
   for (const variant of row.variants) {
-    const available = Math.max(variant.stockQty - variant.reservedQty, 0) > 0;
+    const available = isVariantAvailable(variant, row);
 
     for (const link of variant.attributeValues) {
       if (!link.attribute.showInSwatch) continue;
@@ -91,9 +98,7 @@ function swatches(row: ProductCardRow): ProductSwatchDto[] {
 function stockOf(row: ProductCardRow): { inStock: boolean; stockStatus: string } {
   if (row.isMadeToOrder) return { inStock: true, stockStatus: 'MADE_TO_ORDER' };
 
-  const sellable = row.variants.filter(
-    (variant) => variant.allowBackorder || Math.max(variant.stockQty - variant.reservedQty, 0) > 0,
-  );
+  const sellable = row.variants.filter((variant) => isVariantAvailable(variant, row));
 
   if (sellable.length === 0) return { inStock: false, stockStatus: 'OUT_OF_STOCK' };
   return { inStock: true, stockStatus: sellable[0]!.stockStatus };
@@ -105,7 +110,11 @@ export interface CardPricing {
   relevanceScore?: number;
 }
 
-export function toProductCard(row: ProductCardRow, pricing: CardPricing): ProductCardDto {
+export function toProductCard(
+  row: ProductCardRow,
+  pricing: CardPricing,
+  merchandising: MerchandisingContext,
+): ProductCardDto {
   const primary = row.categories[0]?.category ?? null;
   const { inStock, stockStatus } = stockOf(row);
 
@@ -114,6 +123,8 @@ export function toProductCard(row: ProductCardRow, pricing: CardPricing): Produc
       ? row.compareAtPricePaise
       : null;
   const savingsPaise = compareAt === null ? 0 : compareAt - pricing.pricePaise;
+  const isNewArrival = isNewArrivalAt(row, merchandising);
+  const isFeatured = isFeaturedAt(row, merchandising.now);
 
   return {
     id: row.id,
@@ -144,9 +155,24 @@ export function toProductCard(row: ProductCardRow, pricing: CardPricing): Produc
     ratingAvgBp: row.ratingAvgBp,
     ratingCount: row.ratingCount,
     soldCount: row.soldCount,
-    isNewArrival: row.isNewArrival,
-    isFeatured: row.isFeatured,
+    isNewArrival,
+    isFeatured,
     isBestSeller: row.isBestSeller,
+    badges: badgesFor(
+      {
+        customText: row.badgeText,
+        customColor: row.badgeColor,
+        newArrival: isNewArrival,
+        sale: savingsPaise > 0,
+        bestSeller: row.isBestSeller,
+        featured: isFeatured,
+        specialCollection: row.isSpecialCollection,
+        madeToOrder: row.isMadeToOrder,
+        customizable: row.allowCustomization,
+        inHouse: row.manufacturedInHouse,
+      },
+      merchandising,
+    ),
     variantCount: row.variants.length,
     swatches: swatches(row),
     ...(pricing.relevanceScore === undefined ? {} : { relevanceScore: pricing.relevanceScore }),

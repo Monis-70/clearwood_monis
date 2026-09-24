@@ -1,10 +1,13 @@
 import type { Prisma } from '@prisma/client';
 
+import type { PublicationState } from '@shared/enums';
 import type {
+  MerchandisingInput,
   ProductAttributeValuesInput,
   ProductCategoriesInput,
   ProductCreateInput,
   ProductDuplicateInput,
+  ProductPublishInput,
   ProductRelationsInput,
   ProductUpdateInput,
 } from '@shared/schemas/catalogAdmin';
@@ -24,6 +27,7 @@ import type { PageResult } from '../../repositories/helpers';
 import {
   productRepository,
   type AdminProductQuery,
+  type ProductAdminRow,
   type ProductForAdmin,
 } from '../../repositories/product.repository';
 import { updateVersioned } from '../../repositories/versioned';
@@ -31,6 +35,7 @@ import { categoryAttributeService } from '../../services/categoryAttribute.servi
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { ensureUniqueSlug, slugify } from '../../utils/slug';
+import { mark } from '../../utils/uniqueMark';
 import { mediaUsageService } from '../media/media-usage.service';
 
 import { catalogCacheService } from './catalogCache.service';
@@ -186,10 +191,12 @@ function toRelationDto(relation: ProductForAdmin['relations'][number]): ProductR
 }
 
 export function toSummaryDto(product: ProductForAdmin): AdminProductSummaryDto {
+  const primaryMedia = product.media.find((row) => row.role === 'PRIMARY');
   return {
     id: product.id,
     sku: product.sku,
-    slug: product.slug,
+    // A deleted product's own slug is a placeholder; show the one it gave up.
+    slug: product.deletedSlug ?? product.slug,
     name: product.name,
     status: product.status,
     productType: product.productType,
@@ -204,9 +211,62 @@ export function toSummaryDto(product: ProductForAdmin): AdminProductSummaryDto {
     primaryCategoryId: product.categories.find((row) => row.isPrimary)?.categoryId ?? null,
     publishedAt: product.publishedAt?.toISOString() ?? null,
     lastPublishedAt: product.lastPublishedAt?.toISOString() ?? null,
+    publication: publicationOf(product),
+    isFeatured: product.isFeatured,
+    isNewArrival: product.isNewArrival,
+    allowCustomization: product.allowCustomization,
+    thumbnailUrl: primaryMedia ? storage.url(primaryMedia.media.path) : null,
+    createdAt: product.createdAt.toISOString(),
     version: product.version,
     updatedAt: product.updatedAt.toISOString(),
     deletedAt: product.deletedAt?.toISOString() ?? null,
+  };
+}
+
+/** Where a product stands on the storefront, from the same fields the visibility rule reads. */
+export function publicationOf(
+  product: { status: string; publishedAt: Date | null; deletedAt: Date | null },
+  now = new Date(),
+): PublicationState {
+  if (product.deletedAt || product.status === 'ARCHIVED') return 'ARCHIVED';
+  if (product.status !== 'ACTIVE') return 'DRAFT';
+  return product.publishedAt && product.publishedAt.getTime() > now.getTime()
+    ? 'SCHEDULED'
+    : 'LIVE';
+}
+
+/** The admin table row, from the compact list select - no variant or media graph is loaded. */
+export function toAdminRowDto(row: ProductAdminRow): AdminProductSummaryDto {
+  const thumb = row.media[0]?.media;
+  const rendition =
+    thumb?.variants.find((variant) => variant.format === 'WEBP') ?? thumb?.variants[0];
+  return {
+    id: row.id,
+    sku: row.sku,
+    slug: row.deletedSlug ?? row.slug,
+    name: row.name,
+    status: row.status,
+    productType: row.productType,
+    visibility: row.visibility,
+    brandId: row.brandId,
+    taxClassId: row.taxClassId,
+    basePricePaise: row.basePricePaise,
+    completenessScore: row.completenessScore,
+    variantCount: row.variants.length,
+    mediaCount: row._count.media,
+    totalStock: row.variants.reduce((sum, variant) => sum + variant.stockQty, 0),
+    primaryCategoryId: row.categories[0]?.categoryId ?? null,
+    publishedAt: row.publishedAt?.toISOString() ?? null,
+    lastPublishedAt: row.lastPublishedAt?.toISOString() ?? null,
+    publication: publicationOf(row),
+    isFeatured: row.isFeatured,
+    isNewArrival: row.isNewArrival,
+    allowCustomization: row.allowCustomization,
+    thumbnailUrl: rendition ? storage.url(rendition.path) : thumb ? storage.url(thumb.path) : null,
+    createdAt: row.createdAt.toISOString(),
+    version: row.version,
+    updatedAt: row.updatedAt.toISOString(),
+    deletedAt: row.deletedAt?.toISOString() ?? null,
   };
 }
 
@@ -232,9 +292,12 @@ export function toDetailDto(product: ProductForAdmin): AdminProductDetailDto {
     heightMm: product.heightMm,
     seatHeightMm: product.seatHeightMm,
     isFeatured: product.isFeatured,
+    featuredUntil: product.featuredUntil?.toISOString() ?? null,
     isNewArrival: product.isNewArrival,
     isSpecialCollection: product.isSpecialCollection,
     isBestSeller: product.isBestSeller,
+    badgeText: product.badgeText,
+    badgeColor: product.badgeColor,
     minOrderQty: product.minOrderQty,
     maxOrderQty: product.maxOrderQty,
     seoTitle: product.seoTitle,
@@ -317,6 +380,64 @@ export async function expandCategorySelection(categoryIds: string[]): Promise<st
   return [...new Set([...categoryIds, ...extra])];
 }
 
+/**
+ * Contract work stays out of the purchasable catalog: a SERVICE category is a service line whose
+ * page opens an enquiry form (its leadFormKey), so no product may be filed under one. Shared by
+ * the admin API, bulk actions and CSV import.
+ */
+export function assertPurchasableCategories(categories: { id: string; kind: string }[]): void {
+  const services = categories.filter((category) => category.kind === 'SERVICE');
+  if (services.length > 0) {
+    throw new AppError(
+      422,
+      'CATEGORY_NOT_PURCHASABLE',
+      'A service category takes enquiries, not products',
+      { categoryIds: services.map((category) => category.id) },
+    );
+  }
+}
+
+/**
+ * Rewrites a product's category links inside the caller's transaction. `position` is the
+ * product's place in each category's curated order: a category the product already had keeps
+ * its position, a new one appends the product at the end. Used by the admin API and CSV import.
+ */
+export async function writeCategoryLinks(
+  tx: Prisma.TransactionClient,
+  productId: string,
+  requested: string[],
+  primaryCategoryId: string,
+): Promise<void> {
+  const current = await tx.productCategory.findMany({
+    where: { productId },
+    select: { categoryId: true, position: true },
+  });
+  const kept = new Map(current.map((row) => [row.categoryId, row.position]));
+  const fresh = requested.filter((categoryId) => !kept.has(categoryId));
+  const tails =
+    fresh.length === 0
+      ? []
+      : await tx.productCategory.groupBy({
+          by: ['categoryId'],
+          where: { categoryId: { in: fresh } },
+          _max: { position: true },
+        });
+  const appendAt = new Map(tails.map((row) => [row.categoryId, (row._max.position ?? -1) + 1]));
+
+  await tx.productCategory.deleteMany({ where: { productId } });
+  if (requested.length > 0) {
+    await tx.productCategory.createMany({
+      data: requested.map((categoryId) => ({
+        productId,
+        categoryId,
+        isPrimary: categoryId === primaryCategoryId,
+        primaryMark: mark(categoryId === primaryCategoryId),
+        position: kept.get(categoryId) ?? appendAt.get(categoryId) ?? 0,
+      })),
+    });
+  }
+}
+
 export const productAdminService = {
   computeCompleteness,
   expandCategorySelection,
@@ -324,7 +445,7 @@ export const productAdminService = {
 
   async list(query: AdminProductQuery): Promise<PageResult<AdminProductSummaryDto>> {
     const page = await productRepository.listForAdmin(query);
-    return { ...page, items: page.items.map(toSummaryDto) };
+    return { ...page, items: page.items.map(toAdminRowDto) };
   },
 
   async get(id: string): Promise<AdminProductDetailDto> {
@@ -354,6 +475,9 @@ export const productAdminService = {
       costPricePaise: fields.costPricePaise ?? null,
       leadTimeDays: fields.leadTimeDays ?? null,
       manufacturingNote: fields.manufacturingNote ?? null,
+      featuredUntil: fields.featuredUntil ?? null,
+      badgeText: fields.badgeText ?? null,
+      badgeColor: fields.badgeColor ?? null,
       warrantyMonths: fields.warrantyMonths ?? null,
       careInstructions: fields.careInstructions ?? null,
       weightGrams: fields.weightGrams ?? null,
@@ -419,7 +543,25 @@ export const productAdminService = {
     productId: string,
     input: ProductCategoriesInput,
   ): Promise<AdminProductDetailDto> {
-    await loadOrThrow(productId);
+    await this.applyCategories(productId, input);
+
+    await this.refreshCompleteness(productId);
+    await catalogCacheService.invalidateProduct(productId, 'categories');
+
+    return this.get(productId);
+  },
+
+  /**
+   * Writes the category links without announcing them (bulk actions announce once per batch).
+   * `position` is the product's place in that category's curated order, so a category the
+   * product already had keeps its position and a new one appends it at the end.
+   */
+  async applyCategories(productId: string, input: ProductCategoriesInput): Promise<void> {
+    const product = await prisma.product.findFirst({
+      where: { id: productId },
+      select: { id: true },
+    });
+    if (!product) throw AppError.notFound('Product not found', { id: productId });
 
     const requested = await expandCategorySelection([
       input.primaryCategoryId,
@@ -428,7 +570,7 @@ export const productAdminService = {
 
     const found = await prisma.category.findMany({
       where: { id: { in: requested }, deletedAt: null },
-      select: { id: true },
+      select: { id: true, kind: true },
     });
     const valid = new Set(found.map((row) => row.id));
 
@@ -436,25 +578,46 @@ export const productAdminService = {
     if (missing.length > 0) {
       throw AppError.validation('Unknown category', { categoryIds: missing });
     }
+    assertPurchasableCategories(found);
 
-    await prisma.$transaction(async (tx) => {
-      await tx.productCategory.deleteMany({ where: { productId } });
-      if (requested.length > 0) {
-        await tx.productCategory.createMany({
-          data: requested.map((categoryId, index) => ({
-            productId,
-            categoryId,
-            isPrimary: categoryId === input.primaryCategoryId,
-            position: index,
-          })),
-        });
-      }
+    await productRepository.withProductLock(productId, (tx) =>
+      writeCategoryLinks(tx, productId, requested, input.primaryCategoryId),
+    );
+  },
+
+  /** The product's current links, primary first - what an additive bulk change starts from. */
+  async currentCategories(
+    productId: string,
+  ): Promise<{ primaryCategoryId: string | null; categoryIds: string[] }> {
+    const links = await prisma.productCategory.findMany({
+      where: { productId },
+      select: { categoryId: true, isPrimary: true },
+      orderBy: [{ isPrimary: 'desc' }, { position: 'asc' }],
     });
+    return {
+      primaryCategoryId: links.find((link) => link.isPrimary)?.categoryId ?? null,
+      categoryIds: links.map((link) => link.categoryId),
+    };
+  },
 
-    await this.refreshCompleteness(productId);
-    await catalogCacheService.invalidateProduct(productId, 'categories');
+  /** Merchandising flags and badge; no announcement (callers announce). */
+  async applyMerchandising(productId: string, input: MerchandisingInput): Promise<void> {
+    const data: Prisma.ProductUpdateManyMutationInput = { version: { increment: 1 } };
+    if (input.isFeatured !== undefined) data.isFeatured = input.isFeatured;
+    if (input.featuredUntil !== undefined) data.featuredUntil = input.featuredUntil;
+    if (input.isNewArrival !== undefined) data.isNewArrival = input.isNewArrival;
+    if (input.isBestSeller !== undefined) data.isBestSeller = input.isBestSeller;
+    if (input.isSpecialCollection !== undefined) {
+      data.isSpecialCollection = input.isSpecialCollection;
+    }
+    if (input.badgeText !== undefined) data.badgeText = input.badgeText;
+    if (input.badgeColor !== undefined) data.badgeColor = input.badgeColor;
 
-    return this.get(productId);
+    const { count } = await prisma.product.updateMany({
+      where: { id: productId, deletedAt: null },
+      data,
+    });
+    if (count === 0) throw AppError.notFound('Product not found', { id: productId });
   },
 
   async setAttributeValues(
@@ -496,8 +659,26 @@ export const productAdminService = {
       throw AppError.validation('A product cannot relate to itself', { productId });
     }
 
+    // The same product twice under one type is one relation, not two (and not a 500).
+    const seen = new Set<string>();
+    const repeated = input.relations.filter((relation) => {
+      const key = `${relation.type}|${relation.relatedProductId}`;
+      if (seen.has(key)) return true;
+      seen.add(key);
+      return false;
+    });
+    if (repeated.length > 0) {
+      throw AppError.validation('A product is listed twice under the same relation type', {
+        repeated: repeated.map(({ type, relatedProductId }) => ({ type, relatedProductId })),
+      });
+    }
+
+    // A deleted product cannot be curated; a draft or hidden one may be (the storefront skips it).
     const targets = await prisma.product.findMany({
-      where: { id: { in: input.relations.map((relation) => relation.relatedProductId) } },
+      where: {
+        id: { in: input.relations.map((relation) => relation.relatedProductId) },
+        deletedAt: null,
+      },
       select: { id: true },
     });
     const known = new Set(targets.map((row) => row.id));
@@ -662,7 +843,7 @@ export const productAdminService = {
     return blockers;
   },
 
-  async publish(id: string): Promise<AdminProductDetailDto> {
+  async publish(id: string, input: ProductPublishInput = {}): Promise<AdminProductDetailDto> {
     const blockers = await this.publishBlockers(id);
 
     await prisma.product.update({
@@ -677,12 +858,15 @@ export const productAdminService = {
       });
     }
 
+    // A future publishAt schedules it: ACTIVE now, visible from then (the one visibility rule).
     const now = new Date();
+    const goLive =
+      input.publishAt && input.publishAt.getTime() > now.getTime() ? input.publishAt : now;
     await prisma.product.update({
       where: { id },
       data: {
         status: 'ACTIVE',
-        publishedAt: now,
+        publishedAt: goLive,
         lastPublishedAt: now,
         publishBlockersJson: null,
         version: { increment: 1 },
@@ -693,6 +877,48 @@ export const productAdminService = {
     await catalogCacheService.invalidateProduct(id, 'publish');
 
     return this.get(id);
+  },
+
+  /**
+   * Bulk ACTIVATE: the publish gate applies exactly as it does to a single publish - a draft that
+   * was never published would otherwise go live with no image or no price. A product that was
+   * published before keeps its publishedAt (a scheduled one stays scheduled).
+   */
+  async activate(id: string): Promise<void> {
+    const product = await prisma.product.findUnique({
+      where: { id },
+      select: { deletedAt: true, publishedAt: true },
+    });
+    if (!product) throw AppError.notFound('Product not found', { id });
+    if (product.deletedAt) {
+      throw new AppError(409, 'PRODUCT_DELETED', 'Restore this product before activating it', {
+        id,
+      });
+    }
+
+    const blockers = await this.publishBlockers(id);
+    if (blockers.length > 0) {
+      await prisma.product.update({
+        where: { id },
+        data: { publishBlockersJson: blockersColumn.serialize(blockers) },
+      });
+      throw new AppError(422, 'PRODUCT_NOT_PUBLISHABLE', 'This product cannot be published yet', {
+        productId: id,
+        blockers,
+      });
+    }
+
+    const now = new Date();
+    await prisma.product.update({
+      where: { id },
+      data: {
+        status: 'ACTIVE',
+        publishedAt: product.publishedAt ?? now,
+        ...(product.publishedAt ? {} : { lastPublishedAt: now }),
+        publishBlockersJson: null,
+        version: { increment: 1 },
+      },
+    });
   },
 
   async unpublish(id: string): Promise<AdminProductDetailDto> {
@@ -755,6 +981,7 @@ export const productAdminService = {
           productId: created.id,
           categoryId: row.categoryId,
           isPrimary: row.isPrimary,
+          primaryMark: mark(row.isPrimary),
           position: row.position,
         })),
       });
@@ -791,6 +1018,9 @@ export const productAdminService = {
             barcode: null,
             position: variant.position,
             isDefault: variant.isDefault,
+            defaultMark: mark(variant.isDefault),
+            // Keys depend only on the options, so the copy's are as unique as the source's.
+            combinationKey: variant.combinationKey,
             isActive: variant.isActive,
             // Stock belongs to the original: the copy starts empty and gets its own ledger.
             stockQty: 0,
@@ -827,6 +1057,7 @@ export const productAdminService = {
             productId: created.id,
             mediaId: row.mediaId,
             role: row.role,
+            primaryMark: mark(row.role === 'PRIMARY'),
             position: row.position,
             altText: row.altText,
             deviceTarget: row.deviceTarget,
@@ -891,14 +1122,23 @@ export const productAdminService = {
   },
 
   async softDelete(id: string): Promise<void> {
-    await loadOrThrow(id);
-    await productRepository.softDelete(id);
+    const product = await loadOrThrow(id);
+    if (product.deletedAt) return;
+
+    await productRepository.softDelete(id, product.slug);
     await mediaUsageService.detachEntity('PRODUCT', id);
     await catalogCacheService.invalidateProductRemoved(id);
   },
 
+  /** Takes its old slug back when that is still free, otherwise the next free variant of it. */
   async restore(id: string): Promise<AdminProductDetailDto> {
-    await productRepository.restore(id);
+    const product = await loadOrThrow(id);
+    if (!product.deletedAt) return this.get(id);
+
+    const slug = await ensureUniqueSlug(productRepository, product.deletedSlug ?? product.slug, id);
+    await slugRedirectService.assertSlugFree('PRODUCT', slug, id);
+
+    await productRepository.restore(id, slug);
     await catalogCacheService.invalidateProduct(id, 'restore');
     return this.get(id);
   },

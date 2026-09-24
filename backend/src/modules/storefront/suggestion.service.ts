@@ -25,12 +25,7 @@ export const suggestionService = {
     const cap = Math.min(limit ?? env.SEARCH_SUGGEST_LIMIT, env.SEARCH_SUGGEST_LIMIT);
     const key = `${STOREFRONT_CACHE_PREFIXES.suggest}${normalised}:${cap}`;
 
-    const cached = await cache.get<SuggestionDto[]>(key);
-    if (cached) return cached;
-
-    const suggestions = await this.compute(prefix, normalised, cap);
-    await cache.set(key, suggestions, SUGGEST_TTL_SECONDS);
-    return suggestions;
+    return cache.wrap(key, SUGGEST_TTL_SECONDS, () => this.compute(prefix, normalised, cap));
   },
 
   async compute(prefix: string, normalised: string, cap: number): Promise<SuggestionDto[]> {

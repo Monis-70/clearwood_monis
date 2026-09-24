@@ -32,6 +32,9 @@
  * BIND ADDRESS. Until a reverse proxy exists, the app must answer on 127.0.0.1 ONLY. It has no
  * TLS, no rate limiting in front of it and no DNS name; exposing 0.0.0.0 would put an
  * unauthenticated admin API on the public internet. Nginx and TLS are a later prompt.
+ *
+ * CACHE. Four workers need CACHE_DRIVER=redis in backend/.env: with the memory driver each worker
+ * keeps its own cache and rate-limit counters (the app logs a warning at boot). infra/README.md §2b.
  */
 
 module.exports = {
@@ -52,6 +55,14 @@ module.exports = {
       },
 
       autorestart: true,
+      /*
+       * Caps V8's old-generation heap only. Without it V8 collects lazily and, under load, workers
+       * reached 520-620 MB RSS with ~75 MB of live heap, past the 512M limit below, so PM2 would
+       * recycle healthy workers. RSS still
+       * includes what this flag does not bound: the Prisma query engine, buffers, code and the
+       * young generation (measured 350-420 MB RSS with it, same throughput - PROJECT_CONTEXT §46).
+       */
+      node_args: ['--max-old-space-size=384'],
       // A worker that has grown past this is leaking; recycling it beats degrading the site.
       max_memory_restart: '512M',
       // Stop a crash loop from filling the disk with restarts in seconds.

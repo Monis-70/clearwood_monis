@@ -1,14 +1,21 @@
 import type { ShippingMethod } from '@shared/enums';
 import type { PricingShippingRate, ServiceabilityResult } from '@shared/types/pricing';
 
+import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
+import { cache } from '../../container';
 import { notDeleted } from '../../repositories/helpers';
+import { PRICING_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
 
 /**
  * Shipping zones, serviceability and rate selection.
  *
  * Zone resolution precedence is fixed: an exact pincode row beats a range, a range beats the
  * default (lowest-priority active) zone. Nothing else resolves a zone.
+ *
+ * Zones and rates are cached under `price:ship:`, which every zone, rate and pincode write drops
+ * (pricingAdmin.service -> invalidatePricing). They carry no time window, so nothing else can
+ * make a cached answer wrong.
  *
  * Address book and cart integration belong to Prompt 8 — this service only exposes the methods.
  */
@@ -27,72 +34,105 @@ export interface ZoneMatch {
   etaMaxDays: number | null;
 }
 
-export const shippingService = {
-  async resolveZone(pincode: string | null): Promise<ZoneMatch | null> {
-    if (pincode) {
-      const exact = await prisma.shippingPincode.findUnique({
-        where: { pincode },
-        include: { zone: true },
-      });
+async function loadZone(pincode: string | null): Promise<ZoneMatch | null> {
+  if (pincode) {
+    const exact = await prisma.shippingPincode.findUnique({
+      where: { pincode },
+      include: { zone: true },
+    });
 
-      if (exact && !exact.zone.deletedAt && exact.zone.isActive) {
-        return {
-          zoneId: exact.zoneId,
-          zoneCode: exact.zone.code,
-          zoneName: exact.zone.name,
-          matchedBy: 'PINCODE',
-          stateCode: exact.stateCode,
-          state: exact.state,
-          city: exact.city,
-          isServiceable: exact.isServiceable,
-          codAvailable: exact.codAvailable,
-          etaMinDays: exact.etaMinDays,
-          etaMaxDays: exact.etaMaxDays,
-        };
-      }
-
-      const ranges = await prisma.shippingPincodeRange.findMany({
-        where: { fromPincode: { lte: pincode }, toPincode: { gte: pincode } },
-        include: { zone: true },
-      });
-
-      const range = ranges.find((row) => row.zone.isActive && !row.zone.deletedAt);
-      if (range) {
-        return {
-          zoneId: range.zoneId,
-          zoneCode: range.zone.code,
-          zoneName: range.zone.name,
-          matchedBy: 'RANGE',
-          stateCode: range.stateCode,
-          state: null,
-          city: null,
-          isServiceable: true,
-          codAvailable: false,
-          etaMinDays: null,
-          etaMaxDays: null,
-        };
-      }
+    if (exact && !exact.zone.deletedAt && exact.zone.isActive) {
+      return {
+        zoneId: exact.zoneId,
+        zoneCode: exact.zone.code,
+        zoneName: exact.zone.name,
+        matchedBy: 'PINCODE',
+        stateCode: exact.stateCode,
+        state: exact.state,
+        city: exact.city,
+        isServiceable: exact.isServiceable,
+        codAvailable: exact.codAvailable,
+        etaMinDays: exact.etaMinDays,
+        etaMaxDays: exact.etaMaxDays,
+      };
     }
 
-    const fallback = await prisma.shippingZone.findFirst({
-      where: { isActive: true, ...notDeleted },
-      orderBy: { priority: 'desc' },
+    const ranges = await prisma.shippingPincodeRange.findMany({
+      where: { fromPincode: { lte: pincode }, toPincode: { gte: pincode } },
+      include: { zone: true },
     });
-    if (!fallback) return null;
 
-    return {
-      zoneId: fallback.id,
-      zoneCode: fallback.code,
-      zoneName: fallback.name,
-      matchedBy: 'DEFAULT',
-      stateCode: null,
-      state: null,
-      city: null,
-      isServiceable: true,
-      codAvailable: false,
-      etaMinDays: null,
-      etaMaxDays: null,
-    };
+    const range = ranges.find((row) => row.zone.isActive && !row.zone.deletedAt);
+    if (range) {
+      return {
+        zoneId: range.zoneId,
+        zoneCode: range.zone.code,
+        zoneName: range.zone.name,
+        matchedBy: 'RANGE',
+        stateCode: range.stateCode,
+        state: null,
+        city: null,
+        isServiceable: true,
+        codAvailable: false,
+        etaMinDays: null,
+        etaMaxDays: null,
+      };
+    }
+  }
+
+  const fallback = await prisma.shippingZone.findFirst({
+    where: { isActive: true, ...notDeleted },
+    orderBy: { priority: 'desc' },
+  });
+  if (!fallback) return null;
+
+  return {
+    zoneId: fallback.id,
+    zoneCode: fallback.code,
+    zoneName: fallback.name,
+    matchedBy: 'DEFAULT',
+    stateCode: null,
+    state: null,
+    city: null,
+    isServiceable: true,
+    codAvailable: false,
+    etaMinDays: null,
+    etaMaxDays: null,
+  };
+}
+
+async function loadRates(zoneId: string): Promise<PricingShippingRate[]> {
+  const rows = await prisma.shippingRate.findMany({
+    where: { zoneId, isActive: true, ...notDeleted },
+    include: { zone: { select: { code: true } } },
+    orderBy: [{ priority: 'asc' }, { basePaise: 'asc' }],
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    zoneId: row.zoneId,
+    zoneCode: row.zone.code,
+    method: row.method as ShippingMethod,
+    name: row.name,
+    conditionType: row.conditionType,
+    minValue: row.minValue,
+    maxValue: row.maxValue,
+    basePaise: row.basePaise,
+    perUnitPaise: row.perUnitPaise,
+    freeAbovePaise: row.freeAbovePaise,
+    etaMinDays: row.etaMinDays,
+    etaMaxDays: row.etaMaxDays,
+    priority: row.priority,
+  }));
+}
+
+export const shippingService = {
+  async resolveZone(pincode: string | null): Promise<ZoneMatch | null> {
+    return cache.wrap(
+      `${PRICING_CACHE_PREFIXES.shipping}zone:${pincode ?? ''}`,
+      env.PRICING_CACHE_TTL_SECONDS,
+      () => loadZone(pincode),
+    );
   },
 
   async serviceability(pincode: string): Promise<ServiceabilityResult> {
@@ -136,28 +176,11 @@ export const shippingService = {
   },
 
   async ratesForZone(zoneId: string): Promise<PricingShippingRate[]> {
-    const rows = await prisma.shippingRate.findMany({
-      where: { zoneId, isActive: true, ...notDeleted },
-      include: { zone: { select: { code: true } } },
-      orderBy: [{ priority: 'asc' }, { basePaise: 'asc' }],
-    });
-
-    return rows.map((row) => ({
-      id: row.id,
-      zoneId: row.zoneId,
-      zoneCode: row.zone.code,
-      method: row.method as ShippingMethod,
-      name: row.name,
-      conditionType: row.conditionType,
-      minValue: row.minValue,
-      maxValue: row.maxValue,
-      basePaise: row.basePaise,
-      perUnitPaise: row.perUnitPaise,
-      freeAbovePaise: row.freeAbovePaise,
-      etaMinDays: row.etaMinDays,
-      etaMaxDays: row.etaMaxDays,
-      priority: row.priority,
-    }));
+    return cache.wrap(
+      `${PRICING_CACHE_PREFIXES.shipping}rates:${zoneId}`,
+      env.PRICING_CACHE_TTL_SECONDS,
+      () => loadRates(zoneId),
+    );
   },
 
   /**

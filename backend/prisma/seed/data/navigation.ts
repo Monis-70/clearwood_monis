@@ -37,8 +37,14 @@ export const MEGA_MENU_ROOT_SLUGS = [
   'balcony-furniture',
   'outdoor-furniture',
   'mattresses',
+  'bedroom-headboard',
+  'furniture-pillows',
+  'furniture-accessories',
   'complete-interior-solutions',
 ] as const;
+
+/** Service lines: their own top-level entry beside "Furnitures", not a column inside it. */
+export const SERVICE_MENU_ROOT_SLUGS = ['contract-based-work'] as const;
 
 export const LEAD_FORM_ITEMS: SeedNavigationItem[] = [
   { label: 'Home Interiors', type: 'LEAD_FORM', leadFormKey: 'home-interiors' },

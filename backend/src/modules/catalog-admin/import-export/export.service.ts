@@ -66,7 +66,15 @@ export const EXPORT_HEADERS: Record<ImportEntity, string[]> = {
     'seoTitle',
     'seoDescription',
   ],
-  ATTRIBUTE_VALUE: ['attributeCode', 'code', 'label', 'position', 'colorHex', 'isActive'],
+  ATTRIBUTE_VALUE: [
+    'attributeCode',
+    'code',
+    'label',
+    'position',
+    'colorHex',
+    'isActive',
+    'description',
+  ],
   PRICE_ADJUSTMENT: [
     'name',
     'scope',
@@ -253,6 +261,7 @@ export const exportService = {
               value.position,
               value.colorHex,
               value.isActive,
+              value.description,
             ]),
           );
           written += 1;

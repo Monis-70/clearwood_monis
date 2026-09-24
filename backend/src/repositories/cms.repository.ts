@@ -1,5 +1,7 @@
 import { prisma } from '../config/prisma';
 
+import { browsableWhere, liveCollectionWhere } from './storefront.repository';
+
 /**
  * R1 — the CMS reaches Prisma only through this file.
  *
@@ -97,7 +99,7 @@ export const cmsHydrationRepository = {
     if (ids.length === 0) return Promise.resolve([]);
 
     return prisma.collection.findMany({
-      where: { id: { in: ids }, deletedAt: null, isActive: true },
+      where: { id: { in: ids }, ...liveCollectionWhere() },
       select: { id: true, slug: true, name: true, description: true, bannerMediaId: true },
     });
   },
@@ -109,7 +111,7 @@ export const cmsHydrationRepository = {
     return prisma.collectionProduct.findMany({
       where: {
         collectionId: { in: collectionIds },
-        product: { deletedAt: null, status: 'ACTIVE' },
+        product: browsableWhere(),
       },
       select: { collectionId: true, productId: true, position: true },
       orderBy: [{ collectionId: 'asc' }, { position: 'asc' }],
@@ -124,7 +126,7 @@ export const cmsHydrationRepository = {
     return prisma.productCategory.findMany({
       where: {
         categoryId: { in: categoryIds },
-        product: { deletedAt: null, status: 'ACTIVE' },
+        product: browsableWhere(),
       },
       select: { categoryId: true, productId: true, position: true },
       orderBy: [{ categoryId: 'asc' }, { position: 'asc' }],

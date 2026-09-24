@@ -1,6 +1,6 @@
 import argon2 from 'argon2';
 
-import { env } from '../../config/env';
+import { DEV_ADMIN_PASSWORD, env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { AppError } from '../../utils/AppError';
 
@@ -103,6 +103,14 @@ export const passwordService = {
   },
 
   /**
+   * The development bootstrap password is committed to this repository, so it is public. It may
+   * seed a development database; nobody may choose it, and production refuses to sign in with it.
+   */
+  isPublishedPlaceholder(plain: string): boolean {
+    return plain.trim().toLowerCase() === DEV_ADMIN_PASSWORD.toLowerCase();
+  },
+
+  /**
    * Contextual strength policy. The length rule also lives in Zod so the client sees it, but this
    * is the authority because it can compare against the account's own email and phone.
    */
@@ -118,6 +126,9 @@ export const passwordService = {
     }
     if (COMMON_PASSWORDS.has(normalised)) {
       issues.push('is too common');
+    }
+    if (this.isPublishedPlaceholder(password)) {
+      issues.push('is the published development placeholder');
     }
     if (/^(.)\1+$/.test(normalised)) {
       issues.push('must not be a single repeated character');

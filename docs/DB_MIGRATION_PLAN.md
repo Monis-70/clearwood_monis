@@ -125,12 +125,12 @@ a rollback is a config change too.
 
 ## 3. The other three switches (same shape, same day)
 
-| Concern  | Change                                                   | Extra work                                                                                                                                                                                             |
-| -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cache    | `CACHE_DRIVER=redis`, `REDIS_URL=redis://localhost:6380` | implement `backend/src/drivers/cache/redis.cache.ts` (documented TODO already in the file)                                                                                                             |
-| Storage  | `STORAGE_DRIVER=s3` + `AWS_*` / `S3_*` keys              | implement `backend/src/drivers/storage/s3.storage.ts`, then copy `backend/storage/uploads/**` to the bucket preserving keys — `normaliseStorageKey()` guarantees the keys are identical across drivers |
-| Mail     | `MAIL_DRIVER=smtp` + `SMTP_*` keys                       | implement `backend/src/drivers/mail/smtp.mail.ts`                                                                                                                                                      |
-| Payments | `PAYMENT_DRIVER=razorpay` + `RAZORPAY_*` keys            | Shipped in Prompt 9A. Env validation refuses to start without the key id, secret and webhook secret, and without a second linked account when `SPLIT_ENABLED=true`                                     |
+| Concern  | Change                                                                  | Extra work                                                                                                                                                                                             |
+| -------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cache    | `CACHE_DRIVER=redis`, `REDIS_URL=redis://:PASSWORD@127.0.0.1:6380/0`    | none - the Redis driver ships (Redis foundation prompt). It also moves rate-limit counters into Redis. Setup, failure behaviour and how to clear the cache safely: `infra/README.md` §2b               |
+| Storage  | `STORAGE_DRIVER=s3` + `AWS_*` / `S3_*` keys                             | implement `backend/src/drivers/storage/s3.storage.ts`, then copy `backend/storage/uploads/**` to the bucket preserving keys — `normaliseStorageKey()` guarantees the keys are identical across drivers |
+| Mail     | `MAIL_DRIVER=smtp` + `SMTP_*` keys                                      | implement `backend/src/drivers/mail/smtp.mail.ts`                                                                                                                                                      |
+| Payments | `PAYMENT_DRIVER=razorpay` + `RAZORPAY_ENABLED=true` + `RAZORPAY_*` keys | Shipped in Prompt 9A, ON HOLD. Env validation refuses to start without `RAZORPAY_ENABLED=true`, the key id, secret and webhook secret, and without a second linked account when `SPLIT_ENABLED=true`   |
 
 Env validation (`backend/src/config/env.ts`) enforces that each driver's keys are present **only when
 that driver is selected**, so none of this blocks local development today.
@@ -147,6 +147,105 @@ Later prompts will be tempted by these. Do not use them:
 - `Decimal` / `Float` for money — integer paise only
 - MySQL fulltext indexes or generated columns (search arrives in Prompt 7 built on portable columns)
 - auto-increment integer primary keys
+
+## 4a. `20260923090000_catalog_integrity` (Prompt 3)
+
+Adds `Product.deletedSlug`, `ProductVariant.defaultMark` / `combinationKey`,
+`ProductCategory.primaryMark` and `ProductMedia.primaryMark`, four unique indexes and three CHECK
+constraints (PROJECT_CONTEXT §43). It remediates existing data **before** creating them, in one
+forward-only file, so `prisma migrate deploy` succeeds on a database that already violates them:
+
+1. deleted variants lose `isDefault`; per product the first default by `(position, id)` is kept;
+2. the same for primary categories; extra PRIMARY images become `GALLERY`;
+3. `combinationKey` is backfilled for live variants; if two share a combination, only the first
+   by `(position, id)` gets the key (the others stay NULL and remain sellable);
+4. soft-deleted products get `slug = 'deleted-{id}'`, the original kept in `deletedSlug`.
+
+Before deploying, back up and review what step 3 will leave unkeyed:
+
+```sql
+SELECT productId, GROUP_CONCAT(id ORDER BY position, id) AS variants
+FROM (
+  SELECT v.productId, v.id, v.position,
+    SHA2(GROUP_CONCAT(CONCAT(a.attributeId, '=', a.attributeValueId)
+      ORDER BY a.attributeId COLLATE utf8mb4_bin SEPARATOR '&'), 256) AS k
+  FROM ProductVariant v JOIN VariantAttributeValue a ON a.variantId = v.id
+  WHERE v.deletedAt IS NULL GROUP BY v.id
+) keyed
+GROUP BY productId, k HAVING COUNT(*) > 1;
+```
+
+`tests/catalog-integrity-migration.test.ts` applies the migration to a scratch database seeded
+with every violation and asserts the result; the key it computes in SQL matches
+`combinationKeyOf()` in TypeScript.
+
+## 4b. `20260924090000_product_listing_index` (Prompt 4)
+
+Creates `ProductListingIndex` (one row per ACTIVE product: the DEFAULT customer group's price
+range, `computedAt`; unique `productId`, FK with `ON DELETE CASCADE`) and backfills it from the
+existing `SearchDocument` prices, so the storefront keeps its price order across the deploy.
+Products without a document list at their base price until priced. After deploying, run one full
+reindex (`POST /api/v1/admin/search/reindex?entityType=PRODUCT`), which rebuilds this index first
+and then copies the prices into the search documents. Rollback is `DROP TABLE ProductListingIndex`
+plus the previous build: nothing else references the table.
+
+## 4c. `20260924120000_maintenance_task` and `20260924130000_product_listing_attribute` (Prompt 5)
+
+- `MaintenanceTask`: one row per periodic job (lease owner and expiry, watermark, durable rebuild
+  request, last run). No rows are seeded; the listing reconciler creates its own. Rollback:
+  `DROP TABLE MaintenanceTask` with the previous build.
+- `ProductListingAttribute`: one row per (product, attribute value) the listing filters and counts
+  on, unique `(productId, attributeId, attributeValueId)`, index `(attributeValueId, productId)`,
+  FKs to Product, Attribute and AttributeValue with `ON DELETE CASCADE`. Backfilled from specs
+  plus active-variant options for every product that has a listing index row, so attribute filters
+  and facets are unchanged across the deploy. Index names are explicit: MySQL caps identifiers at
+  64 characters and the generated unique name was 67. Rollback: `DROP TABLE ProductListingAttribute`
+  with the previous build (the listing read specs and variants directly).
+- After deploying, nothing has to be run by hand: the first reconcile pass (within
+  `LISTING_RECONCILE_INTERVAL_SECONDS`) re-prices whatever changed since the oldest index row.
+  `npm run listing:reconcile --workspace backend` runs one pass on demand.
+
+Engine version 2 (`PRICING_ENGINE_VERSION=2`) is a behaviour change, not a schema change: orders
+keep their frozen breakdowns and the version they were priced with.
+
+## 4d. `20260924150000_catalog_management` (catalog management phase)
+
+Additive only; every new column means "not configured" when NULL, so no backfill runs.
+
+- `Category.leadFormKey VARCHAR(64)` - the enquiry form a category offers (contract work).
+- `AttributeValue.description VARCHAR(1000)` - option text shown in the PDP option matrix.
+- `Product.featuredUntil DATETIME(3)` + index, `Product.badgeText VARCHAR(64)`,
+  `Product.badgeColor VARCHAR(16)` - time-boxed featuring and an admin-written badge.
+- `Collection.imageMediaId VARCHAR(64)` - the tile image (the banner stays the page header);
+  tracked in `MediaUsage` as `COLLECTION_IMAGE`.
+- `Enquiry` - project / quote requests (formKey, contact, context ids, `detailsJson` per D3,
+  workflow status, assignee, admin note, `version`, soft delete). Plain id columns, no FKs: a
+  deleted category or product must never delete a customer's request. Indexes: `(status,
+createdAt)`, `(formKey, createdAt)`, `(categoryId)`, `(assignedToId, status)`.
+
+Settings, not schema: `catalog.new_arrival_days` (30) and `catalog.badges` (JSON) are seeded as
+AppSetting rows and edited through `PUT /api/v1/admin/catalog/settings`.
+
+After deploying, nothing has to be run by hand. The seed is now create-only for categories,
+attributes, collections and navigation items, so re-running it on a live database only adds the
+new taxonomy groups (49 categories, 4 attributes) and never rewrites an admin's edits. Rollback:
+the previous build ignores the new columns; `DROP TABLE Enquiry` and the five `DROP COLUMN`s undo
+the schema.
+
+## 4e. Catalog hardening (Prompt 6) - no migration
+
+No schema change. `prisma validate`, `prisma migrate status` and a `migrate diff` of the migration
+history against the schema on a shadow database agree. Deploy-relevant behaviour only:
+
+- Relation types are codes in `ProductRelation.type` (VARCHAR 191); the new ones need no DDL.
+- The seed is create-only for tax classes, customer groups, brands and synonyms too, and no longer
+  re-adds a deleted navigation item. The first deploy of this build writes one private AppSetting,
+  `seed.search_synonyms` (group `seed`); on a database seeded before it, existing synonyms are
+  kept and only the marker is written.
+- Known scale item, not needed at 1,000 products: the reconciler's `catalogWrittenSince` probe
+  scans `updatedAt` on Product, ProductVariant, ProductCategory, ProductAttributeValue and
+  Category without an index. At a much larger catalog, add `@@index([updatedAt])` to those five
+  (a separate, additive migration).
 
 ## 5. Testing note
 

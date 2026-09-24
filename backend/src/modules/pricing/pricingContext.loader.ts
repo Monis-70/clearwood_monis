@@ -14,6 +14,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
 import { cache } from '../../container';
 import { notDeleted } from '../../repositories/helpers';
+import { reachableWhere } from '../../repositories/storefront.repository';
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { requestScope } from '../../utils/requestScope';
@@ -57,6 +58,11 @@ export interface LoadContextInput {
    * matcher can report *why* they did not apply instead of them silently vanishing.
    */
   explain?: boolean;
+  /**
+   * Public quote endpoints: a product the storefront cannot reach (draft, archived, hidden,
+   * scheduled, deleted) is "not found" rather than priced. Carts keep pricing their own lines.
+   */
+  reachableOnly?: boolean;
 }
 
 const SETTING_DEFAULTS: PricingSettings = {
@@ -72,10 +78,14 @@ const SETTING_DEFAULTS: PricingSettings = {
 };
 
 async function readSettings(): Promise<PricingSettings> {
-  const cacheKey = `${PRICING_CACHE_PREFIXES.settings}v1`;
-  const cached = await cache.get<PricingSettings>(cacheKey);
-  if (cached) return cached;
+  return cache.wrap(
+    `${PRICING_CACHE_PREFIXES.settings}v1`,
+    env.PRICING_CACHE_TTL_SECONDS,
+    loadSettings,
+  );
+}
 
+async function loadSettings(): Promise<PricingSettings> {
   const rows = await prisma.appSetting.findMany({ where: { group: 'pricing' } });
   const byKey = new Map(rows.map((row) => [row.key, row.value]));
 
@@ -111,7 +121,6 @@ async function readSettings(): Promise<PricingSettings> {
     minOrderValuePaise: num('pricing.min_order_value_paise', SETTING_DEFAULTS.minOrderValuePaise),
   };
 
-  await cache.set(cacheKey, settings, env.PRICING_CACHE_TTL_SECONDS);
   return settings;
 }
 
@@ -136,10 +145,17 @@ async function resolveCustomerGroup(
     if (membership) return toGroupDto(membership.group);
   }
 
-  const fallback = await prisma.customerGroup.findFirst({
-    where: { isDefault: true, isActive: true, ...notDeleted },
-  });
-  return fallback ? toGroupDto(fallback) : null;
+  // Every customer-group write drops this prefix (pricingAdmin.service -> invalidatePricing).
+  return cache.wrap(
+    `${PRICING_CACHE_PREFIXES.settings}group-default`,
+    env.PRICING_CACHE_TTL_SECONDS,
+    async () => {
+      const fallback = await prisma.customerGroup.findFirst({
+        where: { isDefault: true, isActive: true, ...notDeleted },
+      });
+      return fallback ? toGroupDto(fallback) : null;
+    },
+  );
 }
 
 function toGroupDto(group: {
@@ -148,6 +164,7 @@ function toGroupDto(group: {
   name: string;
   priority: number;
   discountBp: number | null;
+  isDefault: boolean;
 }): PricingCustomerGroup {
   return {
     id: group.id,
@@ -155,6 +172,7 @@ function toGroupDto(group: {
     name: group.name,
     priority: group.priority,
     discountBp: group.discountBp,
+    isDefault: group.isDefault,
   };
 }
 
@@ -226,6 +244,25 @@ export const pricingContextLoader = {
   /** Prompt 7 needs the group a request will be priced under before it asks for a quote. */
   resolveCustomerGroup,
 
+  /**
+   * The only two customer facts a catalog unit price depends on (the group, and isFirstOrder for
+   * rules conditioned on it), through the same request-scope keys `load()` uses, so asking first
+   * costs nothing extra when a quote follows.
+   */
+  async catalogAudience(
+    customerId: string | null,
+  ): Promise<{ group: PricingCustomerGroup | null; isFirstOrder: boolean }> {
+    const [group, isFirstOrder] = await Promise.all([
+      requestScope.once(`pricing:group:${customerId}:`, () =>
+        resolveCustomerGroup(customerId, null),
+      ),
+      requestScope.once(`pricing:firstOrder:${customerId ?? ''}`, () =>
+        checkFirstOrder(customerId),
+      ),
+    ]);
+    return { group, isFirstOrder };
+  },
+
   async load(input: LoadContextInput): Promise<PricingContext> {
     if (input.lines.length > env.PRICING_MAX_QUOTE_ITEMS) {
       throw AppError.validation(
@@ -263,18 +300,32 @@ export const pricingContextLoader = {
      * are read-only below, so sharing them cannot leak a mutation between quotes.
      */
     const products = await requestScope.once(
-      `pricing:products:${[...new Set(productIds)].sort().join(',')}|${[...new Set(slugs)].sort().join(',')}`,
+      `pricing:products:${input.reachableOnly ? 'reachable:' : ''}${[...new Set(productIds)].sort().join(',')}|${[...new Set(slugs)].sort().join(',')}`,
       () =>
         prisma.product.findMany({
           where: {
             ...notDeleted,
             OR: [{ id: { in: productIds } }, { slug: { in: slugs } }],
+            ...(input.reachableOnly ? { AND: [reachableWhere(input.now)] } : {}),
           },
-          include: {
-            taxClass: true,
+          // Only what a price depends on: every priced page runs this, descriptions stay in MySQL.
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            brandId: true,
+            basePricePaise: true,
+            compareAtPricePaise: true,
+            isMadeToOrder: true,
+            leadTimeDays: true,
+            weightGrams: true,
+            taxClass: { select: { id: true, code: true, rateBp: true, hsnCode: true } },
             categories: { select: { categoryId: true } },
             collections: { select: { collectionId: true } },
-            variants: { where: notDeleted },
+            variants: {
+              where: notDeleted,
+              select: { id: true, sku: true, pricePaise: true, isDefault: true, isActive: true },
+            },
           },
         }),
     );

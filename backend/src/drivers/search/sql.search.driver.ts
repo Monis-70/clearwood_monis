@@ -1,11 +1,12 @@
-import type { SearchDocument } from '@prisma/client';
-
 import type { SearchEntityType } from '@shared/enums';
 
 import { env, typoToleranceEnabled } from '../../config/env';
 import {
   searchDocumentRepository,
   searchSynonymRepository,
+  type SearchDocumentHead,
+  type SearchDocumentText,
+  type SearchScanFilter,
 } from '../../repositories/searchDocument.repository';
 import { jsonColumn } from '../../utils/jsonColumn';
 
@@ -36,14 +37,12 @@ import {
 /**
  * The search implementation for the CURRENT database.
  *
- * It scans the denormalised SearchDocument table and scores in memory, which keeps every line of
- * relevance logic portable: no FULLTEXT, no MATCH/AGAINST, no ts_vector, nothing that would have to
- * be rewritten when SQLite becomes MySQL 8 (rule D4). The one place a provider matters is
- * `candidateLimit()`, and it is isolated on purpose.
+ * It scores the most popular documents in memory - plus, once the index outgrows that window, the
+ * most popular ones containing every query word - so every line of relevance logic stays here.
  *
- * MySQL upgrade: add FULLTEXT(title, bodyText, keywordsText) to SearchDocument and replace
- * `searchDocumentRepository.scan` with a MATCH ... AGAINST pre-filter. The scoring below, the
- * synonym expansion and the public interface all stay exactly as they are.
+ * A document's text is normalised once per checksum (the indexer changes the checksum whenever any
+ * field changes) and kept in a bounded per-process map, so a query reads only short columns. The
+ * map can never serve stale text: every query compares it with the checksum it just read.
  */
 
 const SYNONYM_CACHE_MS = 60_000;
@@ -69,15 +68,52 @@ interface CachedSynonyms {
   entries: SynonymEntry[];
 }
 
+/** A field as the scorer sees it, with its distinct words of four letters or more by length. */
+interface PreparedField {
+  text: string;
+  wordsByLength: Map<number, string[]>;
+}
+
+interface PreparedDocument {
+  checksum: string;
+  fields: Record<ScoredField, PreparedField>;
+}
+
+/** A hit plus whether every query word matched exactly, which decides if the window was enough. */
+type ScoredHit = SearchHit & { precise: boolean };
+
+function prepareField(raw: string | null): PreparedField {
+  const text = normalise(raw ?? '');
+  const wordsByLength = new Map<number, string[]>();
+  for (const word of new Set(text.split(' '))) {
+    // isNearMatch never matches a word shorter than four letters.
+    if (word.length < 4) continue;
+    const bucket = wordsByLength.get(word.length);
+    if (bucket) bucket.push(word);
+    else wordsByLength.set(word.length, [word]);
+  }
+  return { text, wordsByLength };
+}
+
+/** `text.split(' ').some(word => isNearMatch(word, term))`, visiting only lengths that can match. */
+function hasNearWord(field: PreparedField, term: string): boolean {
+  for (let length = term.length - 1; length <= term.length + 1; length += 1) {
+    const bucket = field.wordsByLength.get(length);
+    if (bucket?.some((word) => isNearMatch(word, term))) return true;
+  }
+  return false;
+}
+
 export class SqlSearchDriver implements SearchDriver {
   readonly name = 'sql' as const;
 
   private synonymCache: CachedSynonyms | null = null;
+  /** Insertion order is recency: a hit is re-inserted, the oldest entry is evicted first. */
+  private readonly prepared = new Map<string, PreparedDocument>();
 
-  /**
-   * The only provider-aware decision in the driver: how many rows it is willing to pull back
-   * before scoring. MySQL's FULLTEXT pre-filter will make this cap irrelevant.
-   */
+  constructor(private readonly maxPrepared: number = env.SEARCH_MEMO_MAX_DOCUMENTS) {}
+
+  /** How many candidates are scored at most, per pass. */
   private candidateLimit(requested: number): number {
     const base = Math.max(requested, env.SEARCH_MAX_RESULTS) * SCAN_MULTIPLIER;
     return Math.min(base, MAX_SCAN);
@@ -169,19 +205,34 @@ export class SqlSearchDriver implements SearchDriver {
       ...new Set([...expandSynonyms(tokens, await this.synonyms()), ...withNumberJoins(tokens)]),
     ];
 
-    const documents = await searchDocumentRepository.scan(
-      {
-        locale,
-        ...(query.entityTypes ? { entityTypes: query.entityTypes } : {}),
-        entityIds: query.entityIds,
-        ...(query.inStockOnly ? { inStockOnly: true } : {}),
-      },
-      this.candidateLimit(limit + offset),
-    );
+    const filter: SearchScanFilter = {
+      locale,
+      ...(query.entityTypes ? { entityTypes: query.entityTypes } : {}),
+      entityIds: query.entityIds,
+      ...(query.inStockOnly ? { inStockOnly: true } : {}),
+    };
+    const window = this.candidateLimit(limit + offset);
+    const heads = await searchDocumentRepository.scanHeads(filter, window);
+    const scored = await this.rank(heads, tokens, expandedTerms, normalizedQuery);
 
-    const scored = documents
-      .map((document) => this.score(document, tokens, expandedTerms, normalizedQuery))
-      .filter((entry): entry is SearchHit => entry !== null)
+    /*
+     * A full window means the index is larger than it. When the window holds fewer documents
+     * matching every query word than the page needs, the most popular such documents outside it
+     * are scored too, so an exact title or SKU is found however unpopular it is.
+     */
+    if (
+      heads.length === window &&
+      scored.filter((entry) => entry.precise).length < limit + offset
+    ) {
+      const seen = new Set(heads.map((head) => head.id));
+      const precise = (
+        await searchDocumentRepository.headsWithEveryWord(filter, tokens, limit + offset)
+      ).filter((head) => !seen.has(head.id));
+      scored.push(...(await this.rank(precise, tokens, expandedTerms, normalizedQuery)));
+    }
+
+    const hits = scored
+      .map(({ precise: _precise, ...hit }) => hit)
       .sort(
         (a, b) =>
           b.score - a.score ||
@@ -190,36 +241,92 @@ export class SqlSearchDriver implements SearchDriver {
       );
 
     return {
-      hits: scored.slice(offset, offset + limit),
-      total: scored.length,
+      hits: hits.slice(offset, offset + limit),
+      total: hits.length,
       normalizedQuery,
       expandedTerms,
       tookMs: Date.now() - startedAt,
     };
   }
 
-  private score(
-    document: SearchDocument,
+  private async rank(
+    heads: SearchDocumentHead[],
     tokens: string[],
     expandedTerms: string[],
     normalizedQuery: string,
-  ): SearchHit | null {
-    const haystacks: Record<ScoredField, string> = {
-      title: normalise(document.title),
-      sku: normalise(document.sku ?? ''),
-      brandText: normalise(document.brandText ?? ''),
-      categoryText: normalise(document.categoryText),
-      attributeText: normalise(document.attributeText),
-      keywordsText: normalise(document.keywordsText),
-      bodyText: normalise(document.bodyText),
+  ): Promise<ScoredHit[]> {
+    const prepared = await this.prepare(heads);
+    return heads
+      .map((head) => {
+        const document = prepared.get(head.id);
+        return document ? this.score(head, document, tokens, expandedTerms, normalizedQuery) : null;
+      })
+      .filter((entry): entry is ScoredHit => entry !== null);
+  }
+
+  /** Normalised text for every head, reading the long columns only for unseen checksums. */
+  private async prepare(heads: SearchDocumentHead[]): Promise<Map<string, PreparedDocument>> {
+    const ready = new Map<string, PreparedDocument>();
+    const missing: string[] = [];
+
+    for (const head of heads) {
+      const known = this.prepared.get(head.id);
+      if (known?.checksum === head.checksum) {
+        ready.set(head.id, known);
+        this.prepared.delete(head.id);
+        this.prepared.set(head.id, known);
+      } else {
+        missing.push(head.id);
+      }
+    }
+
+    for (const row of await searchDocumentRepository.texts(missing)) {
+      const document = this.remember(row);
+      ready.set(row.id, document);
+    }
+    return ready;
+  }
+
+  private remember(row: SearchDocumentText): PreparedDocument {
+    const document: PreparedDocument = {
+      checksum: row.checksum,
+      fields: {
+        title: prepareField(row.title),
+        sku: prepareField(row.sku),
+        brandText: prepareField(row.brandText),
+        categoryText: prepareField(row.categoryText),
+        attributeText: prepareField(row.attributeText),
+        keywordsText: prepareField(row.keywordsText),
+        bodyText: prepareField(row.bodyText),
+      },
     };
 
+    if (this.maxPrepared > 0) {
+      this.prepared.delete(row.id);
+      this.prepared.set(row.id, document);
+      while (this.prepared.size > this.maxPrepared) {
+        const oldest = this.prepared.keys().next();
+        if (oldest.done) break;
+        this.prepared.delete(oldest.value);
+      }
+    }
+    return document;
+  }
+
+  private score(
+    head: SearchDocumentHead,
+    document: PreparedDocument,
+    tokens: string[],
+    expandedTerms: string[],
+    normalizedQuery: string,
+  ): ScoredHit | null {
     let score = 0;
     const matchedFields: string[] = [];
     const matchedOriginalTokens = new Set<string>();
 
     for (const field of SCORED_FIELDS) {
-      const haystack = haystacks[field];
+      const prepared = document.fields[field];
+      const haystack = prepared.text;
       if (!haystack) continue;
 
       let fieldHits = 0;
@@ -235,7 +342,7 @@ export class SqlSearchDriver implements SearchDriver {
         }
 
         if (!typoToleranceEnabled || term.length < 4) continue;
-        if (haystack.split(' ').some((word) => isNearMatch(word, term))) {
+        if (hasNearWord(prepared, term)) {
           fieldHits += 0.5;
         }
       }
@@ -248,20 +355,22 @@ export class SqlSearchDriver implements SearchDriver {
 
     if (score === 0) return null;
 
-    if (haystacks.title.includes(normalizedQuery)) score += EXACT_PHRASE_BONUS;
-    if (tokens.every((token) => matchedOriginalTokens.has(token))) score += ALL_TERMS_BONUS;
+    if (document.fields.title.text.includes(normalizedQuery)) score += EXACT_PHRASE_BONUS;
+    const precise = tokens.every((token) => matchedOriginalTokens.has(token));
+    if (precise) score += ALL_TERMS_BONUS;
 
-    score += document.boostScore;
-    score += Math.min(document.popularityScore, 100) / 100;
+    score += head.boostScore;
+    score += Math.min(head.popularityScore, 100) / 100;
 
     return {
-      entityType: document.entityType as SearchEntityType,
-      entityId: document.entityId,
-      slug: document.slug,
-      title: document.title,
-      subtitle: document.subtitle,
+      entityType: head.entityType as SearchEntityType,
+      entityId: head.entityId,
+      slug: head.slug,
+      title: head.title,
+      subtitle: head.subtitle,
       score: Math.round(score * 100) / 100,
       matchedFields,
+      precise,
     };
   }
 

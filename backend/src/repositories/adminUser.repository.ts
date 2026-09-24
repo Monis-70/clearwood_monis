@@ -15,8 +15,8 @@ const withRoles = {
 export type AdminUserWithRoles = Prisma.AdminUserGetPayload<{ include: typeof withRoles }>;
 
 export const adminUserRepository = {
-  findById(id: string): Promise<AdminUserWithRoles | null> {
-    return prisma.adminUser.findFirst({ where: { id, ...notDeleted }, include: withRoles });
+  findById(id: string, tx: Prisma.TransactionClient = prisma): Promise<AdminUserWithRoles | null> {
+    return tx.adminUser.findFirst({ where: { id, ...notDeleted }, include: withRoles });
   },
 
   findByEmail(email: string): Promise<AdminUserWithRoles | null> {
@@ -52,24 +52,31 @@ export const adminUserRepository = {
     return pageResult(items, total, query);
   },
 
-  create(data: Prisma.AdminUserUncheckedCreateInput): Promise<AdminUserWithRoles> {
-    return prisma.adminUser.create({ data, include: withRoles });
+  create(
+    data: Prisma.AdminUserUncheckedCreateInput,
+    tx: Prisma.TransactionClient = prisma,
+  ): Promise<AdminUserWithRoles> {
+    return tx.adminUser.create({ data, include: withRoles });
   },
 
-  update(id: string, data: Prisma.AdminUserUncheckedUpdateInput): Promise<AdminUserWithRoles> {
-    return prisma.adminUser.update({ where: { id }, data, include: withRoles });
+  update(
+    id: string,
+    data: Prisma.AdminUserUncheckedUpdateInput,
+    tx: Prisma.TransactionClient = prisma,
+  ): Promise<AdminUserWithRoles> {
+    return tx.adminUser.update({ where: { id }, data, include: withRoles });
   },
 
-  softDelete(id: string): Promise<AdminUser> {
-    return prisma.adminUser.update({
+  softDelete(id: string, tx: Prisma.TransactionClient = prisma): Promise<AdminUser> {
+    return tx.adminUser.update({
       where: { id },
       data: { deletedAt: new Date(), status: 'DISABLED' },
     });
   },
 
   /** Invalidates every live access token for this user without waiting for expiry. */
-  bumpPermissionVersion(id: string): Promise<AdminUser> {
-    return prisma.adminUser.update({
+  bumpPermissionVersion(id: string, tx: Prisma.TransactionClient = prisma): Promise<AdminUser> {
+    return tx.adminUser.update({
       where: { id },
       data: { permissionVersion: { increment: 1 } },
     });

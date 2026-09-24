@@ -96,10 +96,12 @@ export const seoService = {
   },
 
   async section(section: SitemapSection, page = 1): Promise<string> {
-    const cacheKey = cmsCacheService.sitemapKey(section, page);
-    const cached = await cmsCacheService.get<string>(cacheKey);
-    if (cached) return cached;
+    return cmsCacheService.wrap(cmsCacheService.sitemapKey(section, page), () =>
+      this.buildSection(section, page),
+    );
+  },
 
+  async buildSection(section: SitemapSection, page: number): Promise<string> {
     const skip = (page - 1) * env.SITEMAP_PAGE_SIZE;
     const take = env.SITEMAP_PAGE_SIZE;
     const base = this.baseUrl();
@@ -190,10 +192,7 @@ export const seoService = {
       }
     }
 
-    const xml = urlset(entries);
-    await cmsCacheService.set(cacheKey, xml);
-
-    return xml;
+    return urlset(entries);
   },
 
   /** Entry counts per section, for the delivery report and for a test to assert against. */

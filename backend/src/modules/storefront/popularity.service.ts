@@ -77,6 +77,8 @@ export const popularityService = {
       await searchDocumentRepository.setPopularity(stat.productId, score);
     }
 
+    // POPULARITY is a sort key: grids cached under the old scores are in the wrong order.
+    await cache.delByPrefix(STOREFRONT_CACHE_PREFIXES.listing);
     return { updated: stats.length };
   },
 
@@ -92,6 +94,7 @@ export const popularityService = {
       await productStatRepository.setScore(id, 0, new Date());
       created += 1;
     }
+    if (created > 0) await cache.delByPrefix(STOREFRONT_CACHE_PREFIXES.listing);
     return created;
   },
 };

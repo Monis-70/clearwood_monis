@@ -6,6 +6,8 @@ import {
   resolveRepository,
   slugRedirectRepository,
 } from '../../repositories/searchAnalytics.repository';
+import { isReachable } from '../../repositories/storefront.repository';
+import { categoryService } from '../../services/category.service';
 
 /**
  * One endpoint that tells the router what a path is.
@@ -90,12 +92,14 @@ export const redirectService = {
     slug: string,
   ): Promise<{ id: string; slug: string; name: string; type: SearchEntityType } | null> {
     const product = await resolveRepository.findProductBySlug(slug);
-    if (product && product.status === 'ACTIVE' && product.visibility !== 'HIDDEN') {
+    if (product && isReachable(product)) {
       return { id: product.id, slug: product.slug, name: product.name, type: 'PRODUCT' };
     }
 
     const category = await resolveRepository.findCategoryBySlug(slug);
-    if (category) return { ...category, type: 'CATEGORY' };
+    if (category && (await categoryService.liveIds()).has(category.id)) {
+      return { ...category, type: 'CATEGORY' };
+    }
 
     const collection = await resolveRepository.findCollectionBySlug(slug);
     if (collection) return { ...collection, type: 'COLLECTION' };

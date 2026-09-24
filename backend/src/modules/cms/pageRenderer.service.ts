@@ -4,10 +4,15 @@ import { isBlockType, type BlockType, type DeviceKind } from '@shared/enums';
 import { logger } from '../../config/logger';
 import { cmsHydrationRepository, type CmsMediaRow } from '../../repositories/cms.repository';
 import { pageRepository, type PageWithBlocks } from '../../repositories/page.repository';
-import { storefrontRepository, type ProductCardRow } from '../../repositories/storefront.repository';
+import {
+  storefrontRepository,
+  type ProductCardRow,
+} from '../../repositories/storefront.repository';
+import { categoryService } from '../../services/category.service';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { AppError } from '../../utils/AppError';
 import { toProductCard } from '../storefront/card.mapper';
+import { loadMerchandising } from '../storefront/merchandising';
 import { productQueryService } from '../storefront/productQuery.service';
 
 import { bannerService } from './banner.service';
@@ -125,17 +130,15 @@ export const pageRendererService = {
   },
 
   async renderBySlug(slug: string, options: RenderOptions = {}): Promise<RenderedPage> {
-    const cacheKey = cmsCacheService.pageKey(
-      slug,
-      options.customerGroupId ?? null,
-      options.device ?? 'DESKTOP',
-    );
+    if (options.preview) return this.renderPage(slug, options);
 
-    if (!options.preview) {
-      const cached = await cmsCacheService.get<RenderedPage>(cacheKey);
-      if (cached) return cached;
-    }
+    // Card prices are quoted for the caller, so the entry belongs to their pricing audience.
+    const audience = await productQueryService.pricingAudience(options.customerId ?? null);
+    const cacheKey = cmsCacheService.pageKey(slug, audience.key, options.device ?? 'DESKTOP');
+    return cmsCacheService.wrap(cacheKey, () => this.renderPage(slug, options));
+  },
 
+  async renderPage(slug: string, options: RenderOptions): Promise<RenderedPage> {
     const page = await pageRepository.findBySlug(slug);
     if (!page) throw AppError.notFound('Page not found', { slug });
 
@@ -144,10 +147,7 @@ export const pageRendererService = {
       throw AppError.notFound('Page not found', { slug });
     }
 
-    const rendered = await this.hydrate(page, options);
-    if (!options.preview) await cmsCacheService.set(cacheKey, rendered);
-
-    return rendered;
+    return this.hydrate(page, options);
   },
 
   /* ------------------------------------------------------------ hydrate */
@@ -287,39 +287,58 @@ export const pageRendererService = {
     /* Phase 3 — every entity the page needs, in parallel batches. */
     const productIds = [...want.products];
 
-    const [cards, media, categories, collections, faqsById, faqsByVisibility, testimonials, stores, brands, banners] =
-      await Promise.all([
-        productIds.length > 0 ? storefrontRepository.findCards(productIds) : Promise.resolve([]),
-        cmsHydrationRepository.mediaByIds([...want.media]),
-        cmsHydrationRepository.categoriesByIds([...want.categories]),
-        cmsHydrationRepository.collectionsByIds([...want.collections]),
-        cmsHydrationRepository.faqsByIds([...want.faqs]),
-        cmsHydrationRepository.faqsByVisibility([...want.faqVisibilities], want.faqLimit),
-        want.needsTestimonials
-          ? cmsHydrationRepository.testimonials(want.testimonialLimit)
-          : Promise.resolve([]),
-        want.needsStores ? cmsHydrationRepository.stores() : Promise.resolve([]),
-        cmsHydrationRepository.brandsByIds([...want.brands]),
-        want.bannerPlacements.size > 0
-          ? bannerService.forPlacements([...want.bannerPlacements], device, now)
-          : Promise.resolve([]),
-      ]);
+    const [
+      cards,
+      media,
+      categoryRows,
+      collections,
+      faqsById,
+      faqsByVisibility,
+      testimonials,
+      stores,
+      brands,
+      banners,
+    ] = await Promise.all([
+      productIds.length > 0 ? storefrontRepository.findCards(productIds) : Promise.resolve([]),
+      cmsHydrationRepository.mediaByIds([...want.media]),
+      cmsHydrationRepository.categoriesByIds([...want.categories]),
+      cmsHydrationRepository.collectionsByIds([...want.collections]),
+      cmsHydrationRepository.faqsByIds([...want.faqs]),
+      cmsHydrationRepository.faqsByVisibility([...want.faqVisibilities], want.faqLimit),
+      want.needsTestimonials
+        ? cmsHydrationRepository.testimonials(want.testimonialLimit)
+        : Promise.resolve([]),
+      want.needsStores ? cmsHydrationRepository.stores() : Promise.resolve([]),
+      cmsHydrationRepository.brandsByIds([...want.brands]),
+      want.bannerPlacements.size > 0
+        ? bannerService.forPlacements([...want.bannerPlacements], device, now)
+        : Promise.resolve([]),
+    ]);
 
     /* Phase 4 — one batched quote for every product on the page (P6 is the only price path). */
     const identity = { customerId: options.customerId ?? null };
 
-    const [displayPrices, pricingBasis] = await Promise.all([
+    // A category under a deactivated parent is not live even though its own row is active.
+    const liveCategories = categoryRows.length > 0 ? await categoryService.liveIds() : null;
+    const categories = categoryRows.filter((row) => liveCategories?.has(row.id));
+
+    const [displayPrices, pricingBasis, merchandising] = await Promise.all([
       productQueryService.resolveDisplayPrices(cards as ProductCardRow[], identity),
       productQueryService.pricingBasis(identity.customerId),
+      loadMerchandising(now),
     ]);
 
     const cardById = new Map(
       (cards as ProductCardRow[]).map((row) => [
         row.id,
-        toProductCard(row, {
-          pricePaise: displayPrices.get(row.id) ?? row.basePricePaise,
-          indexed: { minPricePaise: null, maxPricePaise: null },
-        }),
+        toProductCard(
+          row,
+          {
+            pricePaise: displayPrices.get(row.id) ?? row.basePricePaise,
+            indexed: { minPricePaise: null, maxPricePaise: null },
+          },
+          merchandising,
+        ),
       ]),
     );
 

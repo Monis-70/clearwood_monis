@@ -1,3 +1,4 @@
+import { PRODUCT_RELATION_TYPES } from '@shared/enums';
 import { savingsPercentBp } from '@shared/money';
 import type { PdpQuery } from '@shared/schemas/storefront';
 import type {
@@ -5,14 +6,17 @@ import type {
   DeliveryEstimateDto,
   ProductCardDto,
   ProductDetailDto,
+  ProductRelationGroupDto,
   SpecGroupDto,
   StorefrontVariantDto,
 } from '@shared/types/storefront';
 
 import { env } from '../../config/env';
 import { cache } from '../../container';
-import { storefrontRepository } from '../../repositories/storefront.repository';
+import { browsableWhere, storefrontRepository } from '../../repositories/storefront.repository';
+import { categoryService } from '../../services/category.service';
 import { AppError } from '../../utils/AppError';
+import { isVariantAvailable, unreservedUnits } from '../catalog-admin/availability';
 import { STOREFRONT_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
 import { galleryResolver } from '../media/gallery.resolver';
 import { pricingFacade } from '../pricing/pricing.facade';
@@ -20,6 +24,13 @@ import { pricingContextLoader } from '../pricing/pricingContext.loader';
 import { shippingService } from '../pricing/shipping.service';
 
 import { toImage, toProductCard } from './card.mapper';
+import {
+  badgesFor,
+  isFeaturedAt,
+  isNewArrivalAt,
+  loadMerchandising,
+  type MerchandisingContext,
+} from './merchandising';
 import { optionAvailabilityService } from './optionAvailability.service';
 import { productQueryService } from './productQuery.service';
 
@@ -63,7 +74,7 @@ export const pdpService = {
     const card = await storefrontRepository.findCardBySlug(slug);
     if (!card) throw AppError.notFound(`Product "${slug}" not found`, { slug });
 
-    const product = await storefrontRepository.findIndexableById(card.id);
+    const product = await storefrontRepository.findDetailById(card.id);
     if (!product) throw AppError.notFound(`Product "${slug}" not found`, { slug });
 
     const options = await optionAvailabilityService.build(product, {
@@ -101,14 +112,18 @@ export const pdpService = {
     const line = price.lines[0];
     if (!line) throw AppError.internal('The pricing engine returned no line for this product');
 
+    const merchandising = await loadMerchandising();
     const related = await this.relatedCards(
       product.id,
       relations,
       card.categories.map((link) => link.categoryId),
       identity,
+      merchandising,
     );
 
-    const categories = product.categories.map((link) => link.category);
+    const liveCategories = await categoryService.liveIds();
+    const links = product.categories.filter((link) => liveCategories.has(link.categoryId));
+    const categories = links.map((link) => link.category);
     const primary = categories[0] ?? null;
 
     const compareAt =
@@ -124,12 +139,9 @@ export const pdpService = {
         name: variant.name,
         isDefault: variant.isDefault,
         isActive: variant.isActive,
-        inStock:
-          product.isMadeToOrder ||
-          variant.allowBackorder ||
-          Math.max(variant.stockQty - variant.reservedQty, 0) > 0,
+        inStock: isVariantAvailable(variant, product),
         stockStatus: variant.stockStatus,
-        stockQty: Math.max(variant.stockQty - variant.reservedQty, 0),
+        stockQty: unreservedUnits(variant),
         leadTimeDays: variant.leadTimeDays,
         optionValueIds: variant.attributeValues.map((link) => link.attributeValueId),
       }));
@@ -150,11 +162,11 @@ export const pdpService = {
         ? { id: product.brand.id, slug: product.brand.slug, name: product.brand.name }
         : null,
       breadcrumbs: primary ? breadcrumbsFor(primary.path, categories) : [],
-      categories: product.categories.map((link, index) => ({
+      categories: links.map((link) => ({
         id: link.category.id,
         slug: link.category.slug,
         name: link.category.name,
-        isPrimary: index === 0,
+        isPrimary: link.isPrimary,
       })),
       collections: collections.map((link) => link.collection),
       gallery: gallery.map(toImage),
@@ -178,6 +190,21 @@ export const pdpService = {
       allowCustomization: product.allowCustomization,
       manufacturedInHouse: product.manufacturedInHouse,
       manufacturingNote: product.manufacturingNote,
+      badges: badgesFor(
+        {
+          customText: product.badgeText,
+          customColor: product.badgeColor,
+          newArrival: isNewArrivalAt(product, merchandising),
+          sale: compareAt !== null,
+          bestSeller: product.isBestSeller,
+          featured: isFeaturedAt(product, merchandising.now),
+          specialCollection: product.isSpecialCollection,
+          madeToOrder: product.isMadeToOrder,
+          customizable: product.allowCustomization,
+          inHouse: product.manufacturedInHouse,
+        },
+        merchandising,
+      ),
       warrantyMonths: product.warrantyMonths,
       careInstructions: product.careInstructions,
       assemblyRequired: product.assemblyRequired,
@@ -192,6 +219,7 @@ export const pdpService = {
       delivery,
       related: related.related,
       frequentlyBoughtTogether: related.frequentlyBought,
+      relationGroups: related.groups,
       ratingAvgBp: product.ratingAvgBp,
       ratingCount: product.ratingCount,
       seo: {
@@ -215,12 +243,9 @@ export const pdpService = {
   ): Promise<ProductDetailDto> {
     const key = `${STOREFRONT_CACHE_PREFIXES.pdp}${slug}:${query.variantId ?? ''}:${query.optionValueIds.join('.')}:${query.qty}:${query.pincode ?? ''}:${query.couponCode ?? ''}:${identity.customerId ?? 'anon'}`;
 
-    const hit = await cache.get<ProductDetailDto>(key);
-    if (hit) return hit;
-
-    const detail = await this.bySlug(slug, query, identity);
-    await cache.set(key, detail, env.STOREFRONT_CACHE_TTL_SECONDS);
-    return detail;
+    return cache.wrap(key, env.STOREFRONT_CACHE_TTL_SECONDS, () =>
+      this.bySlug(slug, query, identity),
+    );
   },
 
   groupSpecs(
@@ -255,60 +280,83 @@ export const pdpService = {
     return [...groups.values()].filter((group) => group.items.length > 0);
   },
 
-  /** One query for the relation rows, one for every related card — never one card per relation. */
+  /**
+   * One query for the relation rows, one for every related card — never one card per relation.
+   * `groups` holds every type (PRODUCT_RELATION_TYPES order, admin positions within a type);
+   * `related` merges the curated types other than FREQUENTLY_BOUGHT, or falls back to the primary
+   * category when nothing is curated. Cards come from `findCards`, so a product a shopper cannot
+   * open (hidden, draft, scheduled, deleted) is simply absent from every list.
+   */
   async relatedCards(
     productId: string,
     relations: { relatedProductId: string; type: string; position: number }[],
     categoryIds: string[],
     identity: { customerId: string | null },
-  ): Promise<{ related: ProductCardDto[]; frequentlyBought: ProductCardDto[] }> {
-    const explicit = relations.filter((relation) => relation.type !== 'FREQUENTLY_BOUGHT');
-    const bought = relations.filter((relation) => relation.type === 'FREQUENTLY_BOUGHT');
+    context?: MerchandisingContext,
+  ): Promise<{
+    related: ProductCardDto[];
+    frequentlyBought: ProductCardDto[];
+    groups: ProductRelationGroupDto[];
+  }> {
+    // A row pointing back at the product itself (written around the API) is never shown.
+    const curated = relations.filter((relation) => relation.relatedProductId !== productId);
+    const idsOf = (rows: typeof curated) => [...new Set(rows.map((row) => row.relatedProductId))];
 
-    let relatedIds = explicit.map((relation) => relation.relatedProductId);
+    const explicit = curated.filter((relation) => relation.type !== 'FREQUENTLY_BOUGHT');
+    const boughtIds = idsOf(curated.filter((relation) => relation.type === 'FREQUENTLY_BOUGHT'));
+    const typed = PRODUCT_RELATION_TYPES.map((type) => ({
+      type,
+      ids: idsOf(curated.filter((relation) => relation.type === type)).slice(0, RELATED_LIMIT),
+    })).filter((group) => group.ids.length > 0);
 
-    /* No curated relations: fall back to the same primary category. */
+    let relatedIds = idsOf(explicit);
+
+    /* No curated relations: fall back to the same primary category, as a browse listing would. */
     if (relatedIds.length === 0 && categoryIds.length > 0) {
       const fallback = await storefrontRepository.findIds(
         {
+          ...browsableWhere(),
           id: { not: productId },
           categories: { some: { categoryId: { in: categoryIds } } },
-          status: 'ACTIVE',
-          deletedAt: null,
-          visibility: { in: ['PUBLIC', 'SEARCH_ONLY'] },
         },
         [{ soldCount: 'desc' }, { id: 'asc' }],
       );
       relatedIds = fallback.slice(0, RELATED_LIMIT).map((row) => row.id);
     }
+    relatedIds = relatedIds.slice(0, RELATED_LIMIT);
 
     const wanted = [
-      ...new Set([...relatedIds.slice(0, RELATED_LIMIT), ...bought.map((r) => r.relatedProductId)]),
+      ...new Set([...relatedIds, ...boughtIds, ...typed.flatMap((group) => group.ids)]),
     ];
-    if (wanted.length === 0) return { related: [], frequentlyBought: [] };
+    if (wanted.length === 0) return { related: [], frequentlyBought: [], groups: [] };
 
     const rows = await storefrontRepository.findCards(wanted);
     const prices = await productQueryService.resolveDisplayPrices(rows, identity);
     const indexed = await productQueryService.priceIndex(wanted);
+    const merchandising = context ?? (await loadMerchandising());
 
     const cards = new Map(
       rows.map((row) => [
         row.id,
-        toProductCard(row, {
-          pricePaise: prices.get(row.id) ?? row.basePricePaise,
-          indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
-        }),
+        toProductCard(
+          row,
+          {
+            pricePaise: prices.get(row.id) ?? row.basePricePaise,
+            indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
+          },
+          merchandising,
+        ),
       ]),
     );
+    const pick = (ids: string[]): ProductCardDto[] =>
+      ids.map((id) => cards.get(id)).filter((card): card is ProductCardDto => card !== undefined);
 
     return {
-      related: relatedIds
-        .slice(0, RELATED_LIMIT)
-        .map((id) => cards.get(id))
-        .filter((card): card is ProductCardDto => card !== undefined),
-      frequentlyBought: bought
-        .map((relation) => cards.get(relation.relatedProductId))
-        .filter((card): card is ProductCardDto => card !== undefined),
+      related: pick(relatedIds),
+      frequentlyBought: pick(boughtIds),
+      groups: typed
+        .map((group) => ({ type: group.type, items: pick(group.ids) }))
+        .filter((group) => group.items.length > 0),
     };
   },
 

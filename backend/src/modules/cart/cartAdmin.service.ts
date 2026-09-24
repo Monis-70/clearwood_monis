@@ -146,7 +146,7 @@ export const cartAdminService = {
     ]);
 
     const productIds = [...new Set(candidates.map((item) => item.productId))];
-    const cards = productIds.length ? await storefrontRepository.findCards(productIds) : [];
+    const cards = productIds.length ? await storefrontRepository.findCardsAnyState(productIds) : [];
     const prices = await productQueryService.resolveDisplayPrices(cards, { customerId: null });
     const nameById = new Map(cards.map((card) => [card.id, card.name]));
 

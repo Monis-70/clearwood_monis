@@ -8,6 +8,7 @@ import { prisma } from '../config/prisma';
 import { notDeleted, orderBy, pageResult, skipTake, type PageResult } from './helpers';
 
 const SORTABLE = ['name', 'slug', 'position', 'depth', 'createdAt', 'updatedAt'] as const;
+const LINK_SORTABLE = ['position', 'createdAt'] as const;
 
 export type AdminCategoryQuery = CategoryListQuery;
 
@@ -40,6 +41,14 @@ export const categoryRepository = {
 
   findManyBySlugs(slugs: string[]): Promise<Category[]> {
     return prisma.category.findMany({ where: { slug: { in: slugs }, ...notDeleted } });
+  },
+
+  /** Just enough of every live-or-not row to work out which categories the storefront shows. */
+  findLiveness(): Promise<Pick<Category, 'id' | 'parentId' | 'isActive'>[]> {
+    return prisma.category.findMany({
+      where: notDeleted,
+      select: { id: true, parentId: true, isActive: true },
+    });
   },
 
   /** Flat, ordered list used to assemble the tree in one query (no N+1). */
@@ -87,6 +96,58 @@ export const categoryRepository = {
 
   updateProductCount(id: string, productCountCache: number): Promise<Category> {
     return prisma.category.update({ where: { id }, data: { productCountCache } });
+  },
+
+  /** A category's own product links in curated order (the storefront's CURATED sort). */
+  async listProductLinks(categoryId: string, query: ListQuery) {
+    const where = { categoryId, product: notDeleted };
+    const [items, total] = await Promise.all([
+      prisma.productCategory.findMany({
+        where,
+        ...skipTake(query),
+        orderBy: orderBy(query.sort, query.order, LINK_SORTABLE, [{ position: 'asc' }]),
+        select: {
+          productId: true,
+          isPrimary: true,
+          position: true,
+          product: {
+            select: {
+              sku: true,
+              name: true,
+              slug: true,
+              status: true,
+              visibility: true,
+              publishedAt: true,
+              deletedAt: true,
+            },
+          },
+        },
+      }),
+      prisma.productCategory.count({ where }),
+    ]);
+    return pageResult(items, total, query);
+  },
+
+  async findLinkedProductIds(categoryId: string, productIds: string[]): Promise<Set<string>> {
+    const rows = await prisma.productCategory.findMany({
+      where: { categoryId, productId: { in: productIds } },
+      select: { productId: true },
+    });
+    return new Set(rows.map((row) => row.productId));
+  },
+
+  async setProductPositions(
+    categoryId: string,
+    items: { id: string; position: number }[],
+  ): Promise<void> {
+    await prisma.$transaction(
+      items.map((item) =>
+        prisma.productCategory.updateMany({
+          where: { categoryId, productId: item.id },
+          data: { position: item.position },
+        }),
+      ),
+    );
   },
 
   async slugExists(slug: string, excludeId?: string): Promise<boolean> {

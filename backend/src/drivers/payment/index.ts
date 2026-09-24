@@ -30,6 +30,11 @@ export {
 export { RazorpayPaymentDriver, fetchHttpClient } from './razorpay.payment.driver';
 export type { PaymentHttpClient } from './razorpay.payment.driver';
 
+/**
+ * Razorpay is ON HOLD. The live driver is only reachable with PAYMENT_DRIVER=razorpay AND
+ * RAZORPAY_ENABLED=true (config/env.ts refuses the first without the second), so activating it
+ * later is a configuration change, never a code change.
+ */
 export function createPayment(env: Env): PaymentDriver {
   switch (env.PAYMENT_DRIVER) {
     case 'razorpay':
@@ -39,8 +44,19 @@ export function createPayment(env: Env): PaymentDriver {
       );
       return new RazorpayPaymentDriver();
     case 'mock':
-    default:
-      logger.debug({ driver: 'mock' }, 'payment driver ready — no money will move');
-      return new MockPaymentDriver();
+    default: {
+      const production = env.NODE_ENV === 'production';
+
+      if (production) {
+        logger.warn(
+          { driver: 'mock' },
+          'payment driver is the MOCK in production — online payment is unavailable and every provider signature is refused',
+        );
+      } else {
+        logger.debug({ driver: 'mock' }, 'payment driver ready — no money will move');
+      }
+
+      return new MockPaymentDriver({ refuseSignatures: production });
+    }
   }
 }

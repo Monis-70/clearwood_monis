@@ -4,7 +4,9 @@ import type {
   ImportEntity,
   ImportStatus,
   InventoryReason,
+  ProductBadgeCode,
   ProductRelationType,
+  PublicationState,
   SlugEntityType,
 } from '../enums';
 
@@ -23,6 +25,7 @@ export interface AdminCategoryDto {
   showInMenu: boolean;
   menuColumn: number | null;
   isFeatured: boolean;
+  leadFormKey: string | null;
   shortDescription: string | null;
   description: string | null;
   iconMediaId: string | null;
@@ -42,6 +45,30 @@ export interface AdminCategoryDto {
 
 export interface AdminCategoryTreeNode extends AdminCategoryDto {
   children: AdminCategoryTreeNode[];
+}
+
+/** The storefront's catalog settings as an admin edits them. */
+export interface AdminCatalogSettingsDto {
+  defaultPageSize: number;
+  maxPageSize: number;
+  showOutOfStock: boolean;
+  /** 0: only a product's own isNewArrival flag makes it new. */
+  newArrivalDays: number;
+  /** Codes absent here are never shown on a card. */
+  badges: Partial<Record<ProductBadgeCode, { label: string; color: string | null }>>;
+}
+
+/** One product linked to a category, in that category's curated order (CURATED sort). */
+export interface AdminCategoryProductDto {
+  productId: string;
+  sku: string;
+  name: string;
+  slug: string;
+  status: string;
+  visibility: string;
+  publication: PublicationState;
+  isPrimary: boolean;
+  position: number;
 }
 
 /** What a delete would actually touch, so the UI can warn before anything happens. */
@@ -142,6 +169,14 @@ export interface AdminProductSummaryDto {
   primaryCategoryId: string | null;
   publishedAt: string | null;
   lastPublishedAt: string | null;
+  /** Derived from status + publishedAt: SCHEDULED is ACTIVE with a future publishedAt. */
+  publication: PublicationState;
+  isFeatured: boolean;
+  isNewArrival: boolean;
+  allowCustomization: boolean;
+  /** The primary image's smallest rendition, for the admin table. */
+  thumbnailUrl: string | null;
+  createdAt: string;
   version: number;
   updatedAt: string;
   deletedAt: string | null;
@@ -167,9 +202,12 @@ export interface AdminProductDetailDto extends AdminProductSummaryDto {
   heightMm: number | null;
   seatHeightMm: number | null;
   isFeatured: boolean;
+  featuredUntil: string | null;
   isNewArrival: boolean;
   isSpecialCollection: boolean;
   isBestSeller: boolean;
+  badgeText: string | null;
+  badgeColor: string | null;
   minOrderQty: number;
   maxOrderQty: number | null;
   seoTitle: string | null;

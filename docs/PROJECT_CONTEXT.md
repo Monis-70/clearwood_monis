@@ -171,9 +171,23 @@ Top nav **"Furnitures"** (clicking it goes to Home) → **All Products**. Mega-m
 - **Balcony Furniture:** Balcony Sets, Balcony Chairs, Balcony Tables, Swings, Special Collection, Make your own
 - **Outdoor Furniture:** All Outdoor Sets, Table & Chair Sets, Sofa Sets, Loungers, Special Collection, Make your own
 - **Mattresses:** All, King, Queen, Double Bed, Ortho-Zen, Foam, Special Collection, Make your own
+- **Bedroom Headboard:** All Bedroom Headboard, Bedroom Headboard, Bedroom Legboard, Headboard
+  Cushion, Special Collection Bedroom HeadBoard, Make your own Bedroom Headboard
+- **Furniture Pillows:** All Pillows, Set of 6/5/4/3/2 Pillows, Cylinder, Spherical, Body, Big
+  Floor, Rectangular, Square, Triangle, Knot Ball, Leather, Chair/Floor Pillows, Special
+  Collection Pillows, Make your own Pillows
+- **Furniture Accessories:** All Accessories, Sofa Legs, Sofa Diamonds, Screws / Nails, Table
+  Legs, Chair Legs, Swing Cable / Rope, Hooks, Sofa Sponge Cushion, Foam, Exclusive Accessories,
+  Make your own Accessories
 - **Complete Interior Solutions:** Living Room, Bedroom, Kitchen, Hall, Lobby, Office,
   Special Collection, Make your own
 - **New Arrivals**
+
+**Contract Based Work** is its own top-level entry (a service line, kind `SERVICE`, enquiry form
+`contract-work`): Custom Furnitures, Custom Hotel / Cafe / Restaurant / Lobby / Office / Home
+Furniture, Customized Interior Designer Furniture, Customized Bank Furnitures. Fresh installs seed
+the full names ("Fabric Sofas"); the seed is create-only, so an existing database keeps the names
+its admin has (see §47).
 
 **Lead-capture items** opening a modal form (Name, Phone, Pincode, Email, Message; extra fields
 admin-configurable): **Home Interiors**, **Bulk Order**, **Become a Partner**.
@@ -193,6 +207,10 @@ help center, FAQ, phone number, price-range filters, floating WhatsApp button bo
   - `priority` ordered
 - **Webhook signature verification mandatory**, idempotent payment handling, refunds reverse transfers.
 - Until credentials exist, `PAYMENT_DRIVER=mock` simulates the whole flow **including the split breakdown**.
+- Razorpay is **ON HOLD**: the live driver needs `PAYMENT_DRIVER=razorpay` **and** `RAZORPAY_ENABLED=true`
+  (startup refuses the first without the second). In production the mock refuses every signature
+  and checkout offers cash on delivery only (`ONLINE_PAYMENT_UNAVAILABLE`): its signing secrets are
+  public constants in this repository, so it cannot vouch for a payment.
 - Exact integer splitting lives in `shared/src/money.ts` → `splitPaise()` (no rounding loss).
 
 ---
@@ -279,8 +297,10 @@ ADMIN_SEED_NAME=Platform Owner
 ```
 
 **Production guard:** startup fails if `NODE_ENV=production` and any JWT/admin secret is still a
-dev default, shorter than 32 characters or shared between realms, if `ADMIN_SEED_PASSWORD` is
-unchanged, or if `AUTH_COOKIE_SECURE` is not `true`.
+dev default, shorter than 32 characters or shared between realms, if `ADMIN_SEED_PASSWORD` or
+`ADMIN_SEED_EMAIL` is unchanged, or if `AUTH_COOKIE_SECURE` is not `true`. In every environment it
+fails on `PAYMENT_DRIVER=razorpay` without `RAZORPAY_ENABLED=true`. `HOST` (bind address) defaults
+to `127.0.0.1` and is passed to `listen`.
 
 **Env validation rule:** keys are required **only when their driver is selected**
 (e.g. `S3_BUCKET` is required only if `STORAGE_DRIVER=s3`).
@@ -349,11 +369,28 @@ rules 3/5. What stays separate is guards, secrets, cookies and TTLs.
   (`REFRESH_TOKEN_IN_BODY_NOT_ALLOWED`) and is never used by a browser.
 - Rotation: every refresh issues a new token in the same **family** and marks the old one used.
   Presenting an already-used token revokes the entire family, writes `TOKEN_REUSE_DETECTED` and
-  returns `401 TOKEN_REUSE`.
+  returns `401 TOKEN_REUSE`. Marking it used is an atomic claim (`refreshTokenRepository.claim`):
+  two concurrent refreshes with one token cannot both win - the loser is treated as a replay - and
+  a revocation that races the winner's insert is re-checked, so a family can never fork.
+- Access tokens are signed and verified with **HS256 only** (`algorithms` is pinned on verify). A
+  validly signed token whose claims have the wrong shape (`sub`/`sid` strings, integer `ver`) is
+  still `TOKEN_INVALID`.
+- Only an **ACTIVE** admin holds a usable session: sign-in, refresh and every authenticated request
+  refuse DISABLED, SUSPENDED and not-yet-accepted INVITED accounts; a refresh for one also revokes
+  its family.
+- `mustChangePassword` is **enforced by `authenticate('ADMIN')`**, not by the UI: until it is
+  cleared every admin route answers `403 PASSWORD_CHANGE_REQUIRED`, except the self-service routes
+  that opt in (`/auth/me`, `/auth/change-password`, `/auth/logout`, `/auth/logout-all`,
+  `/auth/sessions`). The new password must differ from the current one and can never be the
+  published development placeholder; production also refuses to sign in with that placeholder.
+- Invites: an `ADMIN_INVITE` token is redeemed at `POST /admin/auth/reset-password` while the
+  account is still INVITED, which sets the password and activates it.
 - Access tokens carry `ver` (the admin's `permissionVersion`). Any role or permission change bumps
   it, so live tokens are rejected immediately rather than at expiry.
 - CSRF is double-submit: a cookie-authenticated `POST/PUT/PATCH/DELETE` must echo the readable CSRF
-  cookie in `X-CSRF-Token`. Bearer requests are exempt because they carry no ambient credential.
+  cookie in `X-CSRF-Token`. Only a `Bearer` Authorization header exempts a request, because only
+  Bearer replaces the cookie in `authenticate`; any other scheme (say `Basic` credentials a browser
+  attaches by itself) leaves the cookie authenticating, so the CSRF header is still required.
   `…/refresh` is deliberately exempt (SameSite=Lax blocks the cross-site POST, the response is
   unreadable cross-origin, and a replayed token kills the family).
 - Passwords are **argon2id** (m=19456, t=2, p=1). Failed logins are constant-ish time — a missing
@@ -378,8 +415,31 @@ rules 3/5. What stays separate is guards, secrets, cookies and TTLs.
 15 codes are marked **dangerous** (`system.role.*`, `system.user.delete`, `payment.*`, `*.export`,
 `order.refund.approve`) and raise the audit severity when they are exercised or denied.
 
-Effective permissions are cached under `rbac:perms:{adminUserId}`; `rbacService.invalidateFor()` and
-`invalidateRole()` clear the cache _and_ bump `permissionVersion`.
+Effective permissions are cached under `rbac:perms:{adminUserId}:v{permissionVersion}` (TTL 300 s).
+Every role or grant change bumps `permissionVersion` (inside the same transaction for user-role
+writes), which moves the key, so one PM2 worker can never serve another worker's stale grants; a
+cache error falls back to MySQL.
+
+**No amplification.** `system.user.*` and `system.role.*` let an admin manage what is at or below
+their own level and never lift anybody - themselves included - above it. A role may be granted only
+if the actor already holds every permission it confers (`403 ROLE_NOT_GRANTABLE`); an account may be
+changed only by an actor holding everything it holds (`403 ADMIN_USER_NOT_MANAGEABLE`); a role
+definition may be edited, widened or deleted only within the actor's own permissions
+(`403 ROLE_NOT_MANAGEABLE`). SUPER_ADMIN is allow-all, so only a SUPER_ADMIN can grant, change or
+edit SUPER_ADMIN. Both sides are read from MySQL, never the cache, and every refusal is audited as a
+CRITICAL `PERMISSION_DENIED`.
+
+**The last active SUPER_ADMIN** cannot be disabled, suspended, deleted or demoted, by anybody
+including themselves (`403 LAST_SUPER_ADMIN`). Every admin-user write runs under
+`SELECT ... FOR UPDATE` on the SUPER_ADMIN role row, so two SUPER_ADMINs retiring each other at the
+same moment cannot both succeed.
+
+**Bootstrap admin.** The seed creates one account from `ADMIN_SEED_EMAIL` / `ADMIN_SEED_PASSWORD` /
+`ADMIN_SEED_NAME` with the ordinary **ADMIN** role and `mustChangePassword=true`, keyed on the email
+and never touched again (no password reset, no role re-grant). A fresh install therefore has no
+SUPER_ADMIN; there is no API path to one except from a SUPER_ADMIN, so it is provisioned
+deliberately, out of band. `npm run admin:reset-password [-- --email <address>]` resets an existing
+account to `ADMIN_SEED_PASSWORD`, forces a change at the next sign-in and revokes its sessions.
 
 ### Audit
 
@@ -633,7 +693,7 @@ The order is fixed. Do not reorder it, and do not add a step without amending th
 | 3   | Quantity tier  | The winning `TierPrice` replaces (`pricePaise`) or reduces (`discountBp`) the current unit price. |
 | 4   | Adjustments    | Matched `PriceAdjustment` rows apply in scope order against their declared basis.                 |
 | 5   | Customization  | `customizationAdjustments` supplied by the caller (Prompt 11 fills this).                         |
-| 6   | Customer group | The group's `discountBp`, if it has one.                                                          |
+| 6   | Customer group | The group's `discountBp`, if it has one (applied from engine version 2, Prompt 5; §45).           |
 | 7   | Line subtotal  | `unitPrice x qty`. Every component is scaled by qty here.                                         |
 | 8   | Discount rules | Active `DiscountRule` rows, evaluated against the whitelisted condition facts.                    |
 | 9   | Coupon         | One explicit coupon, or auto-apply coupons; allocated across eligible lines.                      |
@@ -739,35 +799,37 @@ config change plus a reindex — no route, service or test changes.
 Writes emit on one in-process bus (`events/catalogEvents.ts`); cache invalidation and reindexing are
 both subscribers, which is what stops them drifting apart.
 
-| Write                                       | Event                | Effect                                    |
-| ------------------------------------------- | -------------------- | ----------------------------------------- |
-| product create/update/publish/duplicate     | `product.changed`    | reindex that one document                 |
-| product unpublish / soft or hard delete     | `product.removed`    | drop that document                        |
-| variant create/update/delete/matrix/reorder | `product.changed`    | reindex the parent product                |
-| inventory adjust                            | `inventory.changed`  | reindex (flips `inStock`)                 |
-| price adjustment, tier, price list, tax     | `pricing.changed`    | rebuild the product price index           |
-| category write                              | `category.changed`   | reindex categories, drop storefront cache |
-| collection write or evaluation              | `collection.changed` | reindex collections                       |
-| brand write                                 | `brand.changed`      | reindex brands                            |
+| Write                                       | Event                | Effect                                                 |
+| ------------------------------------------- | -------------------- | ------------------------------------------------------ |
+| product create/update/publish/duplicate     | `product.changed`    | reindex that one document                              |
+| product unpublish / soft or hard delete     | `product.removed`    | drop that document                                     |
+| variant create/update/delete/matrix/reorder | `product.changed`    | reindex the parent product                             |
+| inventory adjust                            | `inventory.changed`  | reindex (flips `inStock`)                              |
+| price adjustment, tier, price list, group   | `pricing.changed`    | re-price reached products, or one leased rebuild (§45) |
+| category write                              | `category.changed`   | reindex categories, drop storefront cache              |
+| collection write or evaluation              | `collection.changed` | reindex collections                                    |
+| brand write                                 | `brand.changed`      | reindex brands                                         |
 
-A product is only ever indexed when it is `status=ACTIVE`, `visibility` is PUBLIC or SEARCH_ONLY and
-`publishedAt <= now`. `reindexAll` finishes with a prune pass that removes anything that no longer
-qualifies.
+A product is indexed for search when it is `status=ACTIVE`, `visibility` is PUBLIC or SEARCH_ONLY and
+`publishedAt <= now` (the full visibility rule is §45). `reindexAll` finishes with a prune pass that
+removes anything that no longer qualifies.
 
 ### The pricingBasis policy
 
 Two different prices are in play on a listing page, and confusing them is how storefronts end up
 showing one number while filtering by another. The rule:
 
-- **Filtering and sorting** always use `SearchDocument.minPricePaise`, which is the DEFAULT customer
-  group's price.
-- **Display** is resolved for the caller's own group, in a single batched `quoteCart` per page.
+- **Filtering and sorting** always use `ProductListingIndex.minPricePaise` (Prompt 4; before that
+  `SearchDocument.minPricePaise`): the default audience's price, exact basis in §45.
+- **Display** is resolved for the caller's own group, card by card from one pricing context
+  (`quoteEach`), so no card's price depends on the others on the page.
 - Every list response states which was used in `pricingBasis`: `DEFAULT_GROUP`, or
-  `CUSTOMER_GROUP:<code>` when a personalised price is being shown.
+  `CUSTOMER_GROUP:<code>` whenever the caller's group is not the default group.
 
-The indexed range itself is produced by calling `pricingFacade.quoteProduct` once per variant.
-`searchIndexer.service.ts` contains no pricing arithmetic at all — the index agrees with
-`/pricing/quote` by construction, not by a second implementation that can drift.
+The indexed range itself is produced by `pricingFacade.quoteEach` over every active variant, in
+`listingIndex.service.ts`, which contains no pricing arithmetic at all — the index agrees with
+`/pricing/quote` by construction, not by a second implementation that can drift. Search documents
+copy the same numbers.
 
 ### The facet counting rule
 
@@ -778,8 +840,8 @@ the pointer. Only attributes that are `isFilterable` _and_ resolvable for the sc
 `categoryAttributeService`) become facets. The price facet is ten equal-width buckets whose counts
 sum to the result total.
 
-One id query runs per dimension that actually has a selection; unselected dimensions all share the
-already-computed candidate set, so an unfiltered grid costs no extra queries.
+Since Prompt 4 every count is a SQL aggregate over the grid's own filter (§44): unselected
+dimensions share two statements, and each dimension with a selection adds one.
 
 ### The collection rule DSL
 
@@ -807,14 +869,14 @@ write loses a race.
 
 ### Cache keys
 
-| Prefix      | Holds                                               |
-| ----------- | --------------------------------------------------- |
-| `sf:set:`   | Storefront settings: page sizes, popularity weights |
-| `sf:list:`  | Listings and category landings by filter hash       |
-| `sf:facet:` | Facet counts by scope + filter hash                 |
-| `sf:pdp:`   | Assembled product detail payloads                   |
-| `sf:sugg:`  | Autocomplete results (60 s)                         |
-| `sf:view:`  | Per-session view dedupe windows                     |
+| Prefix      | Holds                                                            |
+| ----------- | ---------------------------------------------------------------- |
+| `sf:set:`   | Storefront settings: page sizes, popularity weights              |
+| `sf:list:`  | Grids (`grid:<customer\|anon>:`) and landings by full query hash |
+| `sf:facet:` | Facet counts by scope + filter hash                              |
+| `sf:pdp:`   | Assembled product detail payloads                                |
+| `sf:sugg:`  | Autocomplete results (60 s)                                      |
+| `sf:view:`  | Per-session view dedupe windows                                  |
 
 `catalogCacheService.invalidateStorefront()` drops the first four and runs inside every existing
 catalog and pricing invalidator, so an admin edit is visible on the very next public request.
@@ -1082,8 +1144,11 @@ every test runs against the mock.
 The file is named `.UNVERIFIED.ts` on purpose. Unverified integration code is more dangerous than
 absent integration code: it looks finished, so nobody re-checks it before go-live.
 
-`SHIPPING_DRIVER` defaults to `manual`. Selecting `shiprocket` logs a startup WARN, and in
-production **startup fails** unless `SHIPPING_PROVIDER_VERIFIED=true` is explicitly set.
+`SHIPPING_DRIVER` defaults to `manual`. Shiprocket is **ON HOLD**: it is used only with
+`SHIPROCKET_ENABLED=true`, its three credentials and, in production, `SHIPPING_PROVIDER_VERIFIED=true`.
+Anything less falls back to `manual` with a startup WARN - a half-configured courier never stops the
+API from booting - and a Shiprocket provider row switched on in the admin is refused with
+`SHIPPING_PROVIDER_DISABLED`.
 
 ### Prompt 17 go-live checklist � shipping
 
@@ -1092,7 +1157,7 @@ production **startup fails** unless `SHIPPING_PROVIDER_VERIFIED=true` is explici
 - [ ] Confirm the response field names each parser reads.
 - [ ] Run one real end-to-end shipment: create ? AWB ? pickup ? track ? cancel.
 - [ ] Confirm a real webhook is received, verified and applied.
-- [ ] Only then set `SHIPPING_PROVIDER_VERIFIED=true`.
+- [ ] Only then set `SHIPPING_PROVIDER_VERIFIED=true` and `SHIPROCKET_ENABLED=true`.
 
 ### One webhook inbox, not two
 
@@ -1888,18 +1953,19 @@ guard proves it fires against a fixture written to temp and deleted.
 Every site that inspects the row count of a predicated write, and whether a zero there can ONLY
 mean the business rule refused:
 
-| Site | Predicate | On zero rows | Zero means only "refused"? |
-| --- | --- | --- | --- |
-| `coupon.redemption.service.reserve` | `usedCount < usageLimit` (field reference) | COUPON_EXHAUSTED | yes |
-| `refundReservation.reserveOrder` | `paidPaise >= refundedPaise + refundReservedPaise + amount` | REFUND_EXCEEDS_PAID | yes |
-| `refundReservation.reserveTransfer` | `amountPaise >= reversedPaise + reversalReservedPaise + amount` | REVERSAL_EXCEEDS_TRANSFER | yes |
-| `refundReservation.confirm*` / `release*` | `reserved >= amount` | returns false | yes |
-| `refundRepository.claimForExecution` | `executionLockedAt IS NULL` | REFUND_ALREADY_EXECUTING (a registered contention code) | yes - and it says so honestly |
-| `inventory.service.adjust` / `reserve` / `release` | none - an explicit `SELECT ... FOR UPDATE` instead | the floor throws INSUFFICIENT_STOCK under the lock | yes |
-| `repositories/versioned.updateVersioned` | `version = <the caller's>` | STALE_RESOURCE | yes - the caller ASSERTED the version, so a miss is a true answer |
-| `stockReservationRepository.settle` | `status = 'RESERVED'` | returns false | yes - idempotent by design |
-| `documentSequenceRepository.next` | `lastNumber = <read>` | RETRIES; throws a plain Error only after 250 | n/a - never reported as a refusal |
-| `orderSequenceRepository.next` | `lastNumber = <read>` | RETRIES; throws a plain Error only after 250 | n/a - never reported as a refusal |
+| Site                                               | Predicate                                                       | On zero rows                                                                  | Zero means only "refused"?                                             |
+| -------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `coupon.redemption.service.reserve`                | `usedCount < usageLimit` (field reference)                      | COUPON_EXHAUSTED                                                              | yes                                                                    |
+| `refundReservation.reserveOrder`                   | `paidPaise >= refundedPaise + refundReservedPaise + amount`     | REFUND_EXCEEDS_PAID                                                           | yes                                                                    |
+| `refundReservation.reserveTransfer`                | `amountPaise >= reversedPaise + reversalReservedPaise + amount` | REVERSAL_EXCEEDS_TRANSFER                                                     | yes                                                                    |
+| `refundReservation.confirm*` / `release*`          | `reserved >= amount`                                            | returns false                                                                 | yes                                                                    |
+| `refundRepository.claimForExecution`               | `executionLockedAt IS NULL`                                     | REFUND_ALREADY_EXECUTING (a registered contention code)                       | yes - and it says so honestly                                          |
+| `inventory.service.adjust` / `reserve` / `release` | none - an explicit `SELECT ... FOR UPDATE` instead              | the floor throws INSUFFICIENT_STOCK under the lock                            | yes                                                                    |
+| `repositories/versioned.updateVersioned`           | `version = <the caller's>`                                      | STALE_RESOURCE                                                                | yes - the caller ASSERTED the version, so a miss is a true answer      |
+| `stockReservationRepository.settle`                | `status = 'RESERVED'`                                           | returns false                                                                 | yes - idempotent by design                                             |
+| `documentSequenceRepository.next`                  | `lastNumber = <read>`                                           | RETRIES; throws a plain Error only after 250                                  | n/a - never reported as a refusal                                      |
+| `orderSequenceRepository.next`                     | `lastNumber = <read>`                                           | RETRIES; throws a plain Error only after 250                                  | n/a - never reported as a refusal                                      |
+| `refreshTokenRepository.claim`                     | `usedAt IS NULL AND revokedAt IS NULL`                          | re-read: used means TOKEN_REUSE (family revoked), revoked means TOKEN_INVALID | no - deliberately: strict rotation treats a concurrent use as a replay |
 
 `tests/predicated-writes.test.ts` enforces the shape mechanically: no `updateMany` may pin a
 mutable column to a value the caller read earlier, outside the two sequence allocators which retry
@@ -2043,3 +2109,546 @@ does nothing.
 
 The admin user currently in production was seeded as `admin@clearwood.local` with the placeholder
 password. The boot refusal is what makes that safe to have done.
+
+## 42. Shared state: the Redis cache and rate limits (Redis foundation)
+
+Local development still needs nothing but Node and npm: `CACHE_DRIVER=memory` stays the default.
+The PM2 cluster (four workers) runs `CACHE_DRIVER=redis`; with `memory` in production the app logs
+a warning at boot, because every worker would keep its own cache and rate-limit counters.
+
+### The cache contract (`drivers/cache/cache.driver.ts`)
+
+- **Never throws for being unavailable.** `get` misses; `set`/`del`/`delByPrefix` log and carry
+  on. Redis is an optimisation in front of MySQL, never a source of truth.
+- **Values are plain JSON** in both drivers (`cache.codec.ts`). The memory driver stores the
+  serialised text too, so development can never rely on a Date, Map or shared reference that
+  Redis would not give back. A value that cannot be serialised, or is over
+  `CACHE_MAX_VALUE_BYTES`, is simply not cached.
+- **TTL:** `ttlSeconds <= 0` means "do not store"; nothing lives longer than 24 h; every Redis key
+  is written with `SET ... EX`.
+- **`wrap`** collapses concurrent misses for one key in one process onto one producer call.
+  Use `wrap`, not get-then-set, for any read-through cache.
+- **Keys** are `REDIS_KEY_PREFIX` (default `cw:`) + the namespaces in `catalogCache.service.ts`.
+  Prefix deletion is SCAN + UNLINK over this prefix only - never `KEYS`, never `FLUSHDB`. Prefixes
+  requested in the same tick share one SCAN pass.
+
+### Failure semantics
+
+| Situation                | Behaviour                                                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Redis down at startup    | the process boots; reads come from MySQL; it keeps reconnecting (back-off to 2 s)                                              |
+| Redis lost after startup | commands fail at once (no offline queue); reads from MySQL                                                                     |
+| Slow Redis               | `REDIS_COMMAND_TIMEOUT_MS` (500 ms) then MySQL                                                                                 |
+| Unreadable entry         | a miss, and the entry is deleted                                                                                               |
+| Invalidation that failed | remembered; reads under that prefix are misses until a replay succeeds (on reconnect, or on the next read) - never a stale hit |
+| Expired entry            | Redis expires it (`EX`); nothing older than its TTL is ever returned                                                           |
+| Readiness                | `/ready` is 503 only when MySQL is down; Redis down is 200 `degraded`                                                          |
+
+### Multi-worker behaviour
+
+There is no pub/sub: the cache itself is shared, so a delete issued by one worker is what every
+worker reads next. Still per process, by design: `wrap` single-flight, the search synonym memo
+(60 s), the provider-driver memo (60 s) and the permission cache (below).
+
+### The permission cache stays in the process
+
+`rbacService` keeps its entries in a process-local cache whatever `CACHE_DRIVER` says. The key
+includes `permissionVersion`, which is read from MySQL on every request, so a revocation reaches
+every worker immediately without sharing anything - and Redis never takes part in an authorization
+decision.
+
+### Rate limits
+
+With `CACHE_DRIVER=redis` both limiters (`rateLimiter.ts`, `authRateLimit.ts`) count in Redis
+(`{prefix}rl:{limiter}:{key}`, atomic INCR + PEXPIRE, bounded by the window). A bucket used by two
+routes still counts each route separately. If Redis fails, counting continues per process: the
+limit loosens to per-worker for the outage, but neither vanishes (fail-open) nor refuses everyone
+(fail-closed). Account lockout in MySQL still guards logins.
+
+### TRUST_PROXY
+
+Default `false`. Behind nginx on the same machine: `loopback`. Accepts `loopback`, `linklocal`,
+`uniquelocal`, IPs and CIDRs; refuses `true`, `*`, hop counts and `/0` at boot. Rate limits and the
+audit log use the resulting `req.ip`.
+
+### Tests
+
+The Redis suites (`redis-integration`, `redis-app`) run only with
+`CLEARWOOD_TEST_REDIS_URL=redis://127.0.0.1:6380` set, localhost only, under a per-run prefix they
+delete afterwards. One of them runs a second OS process as the "other worker".
+
+## 43. Catalog integrity, ordering and cache consistency (Prompt 3)
+
+### Canonical code
+
+| Concern                                                            | Canonical implementation                                                     |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Catalog writes (products, variants, matrix, media links, import)   | `backend/src/modules/catalog-admin/*`, `modules/media/*`                     |
+| Storefront reads (listing, PDP, options, gallery, resolve, search) | `backend/src/modules/storefront/*` + `repositories/storefront.repository.ts` |
+| Shared cached category reads (tree, detail, counts)                | `backend/src/services/category.service.ts`                                   |
+| Every cache prefix and invalidator                                 | `modules/catalog-admin/catalogCache.service.ts`                              |
+
+Legacy, kept deliberately: `services/product.service.ts` (Prompt 2 detail, only
+`tests/catalog.test.ts` uses it; the storefront PDP is `modules/storefront/pdp.service.ts`) and
+`productRepository.list` (no callers). `GET /api/v1/admin/catalog/categories` is registered twice;
+the first registration (`admin.routes.ts`, the full tree) wins and the paginated list in
+`adminCatalog.routes.ts` is unreachable. Left as-is because the tree is the published contract.
+
+### Invariants the database enforces
+
+| Invariant                                | Enforcement                                                                                                                                                                                                |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| At most one default variant per product  | `ProductVariant.defaultMark` (TRUE or NULL) + `@@unique([productId, defaultMark])` + CHECK tying it to `isDefault`                                                                                         |
+| At most one primary category per product | `ProductCategory.primaryMark` + unique + CHECK to `isPrimary`                                                                                                                                              |
+| At most one PRIMARY image per product    | `ProductMedia.primaryMark` + unique + CHECK to `role = 'PRIMARY'`                                                                                                                                          |
+| One live variant per option combination  | `ProductVariant.combinationKey` = sha256 of `attributeId=valueId` pairs sorted by attributeId (binary) joined with `&`; `@@unique([productId, combinationKey])`; NULL for option-less and deleted variants |
+
+MySQL unique indexes allow many NULLs, so "TRUE or NULL" gives "at most one TRUE". The CHECKs
+(`ProductVariant_defaultMark_check`, `ProductCategory_primaryMark_check`,
+`ProductMedia_primaryMark_check`) live only in the migration SQL; Prisma does not diff them, and
+`tests/catalog-integrity.test.ts` asserts they exist. Always write the flag and its mark together:
+`mark(flag)` from `backend/src/utils/uniqueMark.ts`, and `combinationKeyOf()` from
+`modules/catalog-admin/variantOptions.ts`. Value-belongs-to-attribute is validated in the service
+(422), not by a foreign key.
+
+### Concurrency
+
+Every write that changes one of the invariants runs in `productRepository.withProductLock`
+(`SELECT ... FOR UPDATE` on the product row), so two admins serialise per product. The unique
+indexes are the backstop: a lost race surfaces as 409 `VARIANT_COMBINATION_EXISTS`, or as
+409 `WRITE_CONFLICT` (Prisma P2034, deadlock/serialisation) which the client may retry. It never
+produces zero or two defaults.
+
+### Slugs
+
+Soft-deleting a product moves its slug to `deletedSlug` and sets `slug = 'deleted-{id}'`, so the
+slug is free for a new product at once. Restore reclaims it, or the next free `-2`, `-3`... Admin
+DTOs show the original slug for a deleted product. Soft delete and restore are idempotent. Slug
+redirects still reserve their source slugs.
+
+### Ordering
+
+`repositories/helpers.orderBy()` appends `id` to every ordering, and catalog repositories with
+literal orderings name their tie-breaker. Paging over equal sort values never repeats or skips a row.
+
+### Cache: no stale write after an invalidation
+
+Each driver keeps an invalidation epoch (memory: a counter; Redis: `{prefix}!epoch`, INCR before
+the sweep). `wrap()` reads the epoch before running the producer and stores the result only if
+the epoch is unchanged (Redis: Lua compare-and-set). A request that read the database before an
+admin write and its invalidation can return that value but never cache it. CMS pages, SEO sections
+and pincode lookups now go through `wrap()` too.
+
+Media invalidation is targeted: a gallery write drops the owning product's `sf:pdp:{slug}:`,
+listings, suggestions and CMS pages; an asset write drops the same for every product using it
+(looked up before a hard delete), plus banners; an unused asset drops only CMS pages and banners.
+
+### Listing architecture
+
+Measured here in Prompt 3 (the listing loaded every candidate and filtered/sorted in Node); rebuilt
+in Prompt 4 - see §44.
+
+## 44. The storefront listing read path (Prompt 4)
+
+### Request flow
+
+`GET /catalog/products` -> Zod (`storefrontListQuerySchema`) -> `storefrontFacade.listProducts`:
+
+1. **Grid cache.** `sf:list:grid:<pricing audience>:<sha256 of every validated parameter except
+includeFacets>` via `cache.wrap` (epoch compare-and-set, Prompt 3). Search (`q`) is not cached.
+   The audience is `anon` for everyone priced like an anonymous shopper (§45).
+2. **Prepare** (`productQueryService.prepare`): settings, category + subtree ids, collection,
+   brand slugs, attribute values grouped by attribute, search hits for `q` (bounded by
+   `SEARCH_MAX_RESULTS`), offset from page or fingerprinted cursor -> one `ListingFilter`.
+3. **Page** (`listing.repository.page`): ONE parameterised SQL statement filters, sorts
+   (`ORDER BY <sort keys>, p.id`), paginates (`LIMIT/OFFSET`) and returns total and price bounds
+   through `COUNT(*) OVER ()` / `MIN/MAX(...) OVER ()`.
+4. **Cards** for that page only (`findCards`), priced for the caller card by card from one pricing
+   context (`pricingFacade.quoteEach`, §45).
+5. **Facets** (`facet.service`, cached under `sf:facet:`) from SQL aggregates over the same filter.
+
+`GET /catalog/filters` runs steps 2 and 5 only.
+
+### What MySQL decides
+
+| Concern                           | SQL                                                                                                                                                                                                                                                                                                              |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Live                              | `deletedAt IS NULL`, `status='ACTIVE'`, `publishedAt <= now`; visibility PUBLIC/CATALOG_ONLY for a listing, PUBLIC/SEARCH_ONLY for a search (§45)                                                                                                                                                                |
+| Category (+descendants)           | `EXISTS ProductCategory ... categoryId IN (subtree)`                                                                                                                                                                                                                                                             |
+| Collection                        | `EXISTS CollectionProduct`                                                                                                                                                                                                                                                                                       |
+| Brand                             | `brandId IN (...)`                                                                                                                                                                                                                                                                                               |
+| Attributes                        | per attribute: `id IN (ProductListingAttribute with value)` (specs and active-variant options, §45); OR inside, AND across                                                                                                                                                                                       |
+| Price                             | `COALESCE(ProductListingIndex.minPricePaise, basePricePaise)`                                                                                                                                                                                                                                                    |
+| Availability                      | made to order, or an active variant that is backorderable or has `stockQty - reservedQty > 0` (the card, facet and search index use the same rule); also applied always when `catalog.show_out_of_stock=false`                                                                                                   |
+| Flags, rating, lead time, on sale | plain column predicates                                                                                                                                                                                                                                                                                          |
+| Sort                              | PRICE (index price), NEWEST (`COALESCE(publishedAt, createdAt)`), POPULARITY (`COALESCE(ProductStat.popularityScore, soldCount)`), BEST_SELLING, RATING (+count), NAME_ASC, CURATED (collection position / category link position / product position), RELEVANCE (`FIELD(id, ranked hits)`); `id` is always last |
+
+Pagination stays OFFSET: every sort key is an expression over a join, so MySQL sorts all matches
+either way and a keyset cursor would not reduce the scan; the existing cursor encodes the offset.
+
+### Prices
+
+`ProductListingIndex` (one row per ACTIVE product) holds the default audience's price range
+(basis in §45), computed by `listingIndex.service` through `pricingFacade.quoteEach`. It is
+owned by the catalog, so the listing no longer depends on the search driver's `SearchDocument`
+(which copies these numbers). It is navigation data only: every displayed card price is quoted live
+for the caller. Refreshes are serialised per process and per product by row locks
+(`SELECT ... FOR UPDATE`, taken in productId order), so a refresh that read older data cannot
+overwrite a newer one.
+
+Kept current by: product/variant/category/publish writes (`product.changed`), removals
+(`product.removed`), pricing writes (targeted re-price, or one leased rebuild), CSV imports and
+direct bulk actions (announced), and the listing reconciler (§45), which also covers price windows
+that open or close without a write. Stock and sales events reuse the row instead of repricing.
+
+### Facets
+
+Unselected dimensions: one attribute-value aggregate (a plain `COUNT(*)` over
+`ProductListingAttribute`, unique per product and value) and one `facetScan` grouped by (brand,
+price bucket) that also yields availability, rating and flag counts. A dimension with a selection
+gets its own statement with only that dimension removed. Flag counts are real counts.
+
+### Measured (3,600 products, 3,018 in one subtree)
+
+`CLEARWOOD_LISTING_BENCHMARK=1 npx vitest run tests/catalog-listing-benchmark.test.ts`
+(`CLEARWOOD_LISTING_BENCHMARK_OUT=<file>` writes JSON, `..._ANALYZE=1` prints EXPLAIN ANALYZE,
+`..._DDL=<statements>` tries candidate indexes on the throwaway database). Category grid page 1:
+250 -> 98 ms, rows read 24,957 -> 13,369; grid + facets: 869 -> 172 ms; facet endpoint: 861 -> 92
+ms; warm cache: 11 ms. Candidate covering indexes on `VariantAttributeValue` changed nothing
+measurable and were not added. Prompt 5's larger-scale numbers are in §45.
+
+---
+
+## 45. Catalog correctness over time (Prompt 5)
+
+### Visibility - the one rule
+
+Every storefront path requires `status='ACTIVE'`, `deletedAt IS NULL` and `publishedAt` NULL or in
+the past; then, by visibility (`shared/src/enums.ts`, predicates in `storefront.repository`):
+
+| Visibility   | Category / collection / curated / whole-catalog listings, facets | Search results, autocomplete, search index | Own page, slug resolution, options, gallery, price, explicit links (related, batch, recently viewed, wishlist, CMS), cart |
+| ------------ | ---------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| PUBLIC       | yes                                                              | yes                                        | yes                                                                                                                       |
+| CATALOG_ONLY | yes                                                              | no                                         | yes                                                                                                                       |
+| SEARCH_ONLY  | no                                                               | yes                                        | yes                                                                                                                       |
+| HIDDEN       | no                                                               | no                                         | no                                                                                                                        |
+
+DRAFT, ARCHIVED, scheduled (`publishedAt` in the future) and soft-deleted products appear nowhere.
+The repository fixed the reachability rule already (the cart and slug resolution treated every
+visibility except HIDDEN as live); the enum names fix the other two columns. Before Prompt 5 the
+listing used the search set for browsing (SEARCH_ONLY listed, CATALOG_ONLY never shown anywhere),
+`findCards` returned any product by id, and public quotes priced any product.
+`tests/catalog-correctness.test.ts` walks every path for every state.
+
+### Pricing semantics
+
+- **Listing filter and sort price** (`ProductListingIndex.minPricePaise`, max for the range): for
+  each active, non-deleted variant (the base price when there is none), the engine's
+  `unitPricePaise` for ONE unit bought on its own, channel WEB, no customer - so the DEFAULT
+  customer group and `isFirstOrder=true` - no coupon, no pincode, at the refresh time. That is
+  steps 1-7 of §15 (base, price list, tier at qty 1, adjustments, customisation, group discount).
+  Line discount rules, coupons, shipping and GST are not in it.
+- **Displayed card price**: the same `unitPricePaise`, for the caller's own group and
+  `isFirstOrder`, for the product's DEFAULT variant, at request time.
+- `pricingBasis` is `CUSTOMER_GROUP:<code>` whenever the caller's group is not the default group,
+  whether or not it has a blanket discount; otherwise `DEFAULT_GROUP`.
+- Step 6 (the group's `discountBp`) was documented but never applied; engine version 2 applies it
+  once per unit, on the running price after adjustments and customisation, rounded half-up, as a
+  `CUSTOMER_GROUP` component. A group price list, tier or adjustment runs first; the blanket
+  discount then applies on top of it (the documented order).
+- Catalog surfaces (cards, option deltas, the index) price each item as if bought alone
+  (`quoteEach`: one context load, the pure engine run per line). Through `quoteCart` every card
+  saw `cartItemCount` = the page size, so a rule conditioned on it changed a card's price with the
+  number of cards on the page. Carts still price as carts.
+
+### The listing reconciler (`listingReconciler.service`)
+
+Every API process offers to run it every `LISTING_RECONCILE_INTERVAL_SECONDS` (default 60; 0 = no
+timer, schedule `npm run listing:reconcile` from cron instead). A `MaintenanceTask` row is the
+lease: taken by a compare-and-set `UPDATE ... WHERE leaseExpiresAt < now`, renewed between batches
+(`LISTING_RECONCILE_LEASE_SECONDS`, default 300), released on completion or failure, and simply
+expiring if its holder dies. One process works; the others return at once. A pass covers
+`(watermarkAt, now]` and re-prices:
+
+1. products reached by PriceAdjustment / PriceList windows that opened (`startsAt` in the span) or
+   closed (`endsAt` in `[from, to)`) for the default audience, and weekday-conditioned rules at each
+   UTC midnight; a GLOBAL rule, or a pending rebuild request, re-prices everything;
+2. products MySQL itself says are stale - no row, or a product/variant row written after its index
+   row was computed (up to 2,000 per pass) - which repairs lost or forgotten events;
+3. then prunes rows nothing can list, drops the price-bearing caches, and advances the watermark -
+   only if it still holds the lease. Discount-rule and auto-coupon windows only drop caches.
+
+Re-pricing is idempotent, so a span processed twice is wasted work, never a wrong price.
+`pricing.changed` without product ids (price lists, tiers, groups, imports, GLOBAL or wide rules)
+no longer rebuilds in the worker that saw it: it raises the durable `rebuildRequestedAt`, and the
+lease holder rebuilds once for any number of requests. Price-adjustment writes re-price exactly
+the products their old and new targets reach (up to 500 inline). Coupons, discount rules, shipping,
+pricing settings, tax classes and group membership never touch the index. Category tree moves,
+collection membership and attribute changes ask for a rebuild only when a live rule reads that
+fact.
+
+### ProductListingAttribute
+
+One row per (product, attribute value) the product answers to: specs plus active-variant options.
+Written in the same locked transaction as the product's price row, deleted with it, rebuilt by
+`rebuildAll`, cascaded when a value or attribute is deleted, and repaired by the reconciler like the
+price row. Attribute filters and attribute facet counts read only this table. No attribute is
+special-cased.
+
+### Availability
+
+One rule, `catalog-admin/availability.ts` (SQL twin `IN_STOCK` in listing.repository): a variant
+is orderable when its product is made to order, it accepts backorders, or `stockQty - reservedQty
+
+> 0`; a product when any active variant is. Card, swatch (it used to ignore backorder and made to
+order), PDP, option matrix, search document, filter and facet use it. A reservation or release
+that flips a variant's availability emits `inventory.changed`, so cached grids follow; holds that
+> leave it orderable change nothing a shopper sees and announce nothing. Checkout's locked
+> reservation remains the final check; the cache is never authoritative.
+
+### Caches keyed on whose prices they show
+
+`productQueryService.pricingAudience`: anonymous shoppers and signed-in shoppers of the default
+group who have not ordered yet share `anon`; everyone else gets `g<groupId>:first|returning`.
+Grid, landing and CMS page caches use it (CMS pages were keyed on a group id the controller never
+set, so the first renderer's prices reached everyone). PDPs stay keyed per customer.
+
+### Card payload
+
+Cards carry the SMALL and MEDIUM renditions only (`CARD_RENDITION_LABELS`, from §13's documented
+uses), in every format the ladder produced, plus the original `url`. Galleries keep the whole
+ladder. A 24-card grid page: 89 KB -> 56 KB.
+
+### Measured (one local machine: MySQL 8.0.46 in WSL, memory cache; not a production guarantee)
+
+`CLEARWOOD_LISTING_BENCHMARK=1 CLEARWOOD_LISTING_BENCHMARK_PRODUCTS=<total>` (`..._REBUILD=1` also
+times a full rebuild). The fixture: 80% under a 3-level, 48-leaf subtree, 1-4 variants, collections,
+and a lifecycle mix (drafts, archived, hidden, search-only, catalog-only, scheduled, deleted).
+
+| Products               | Grid p1       | Grid + facets   | Filtered + facets | Facet endpoint  | Full rebuild                               |
+| ---------------------- | ------------- | --------------- | ----------------- | --------------- | ------------------------------------------ |
+| 3,600 before -> after  | 109 -> 118 ms | 180 -> 140 ms   | 108 -> 117 ms     | 75 -> 55 ms     | 116 s / 181,616 q -> 10 s / 4,842 q        |
+| 50,000 before -> after | 510 -> 533 ms | 2,015 -> 985 ms | 1,587 -> 660 ms   | 1,589 -> 429 ms | (~25 min extrapolated) -> 142 s / 65,177 q |
+
+What remains is linear in the scope: a category covering 37,000 products scans them, joins their
+index and stat rows and sorts, ~0.4 s cold at 50,000 (10 ms warm). Deep pages cost the same as page
+1, so OFFSET is not the problem.
+
+## 46. Performance foundation (Prompt 5B)
+
+Sized for the stated ceiling of **1,000 products**. Nothing here changes a price, a filter or a
+response shape; `tests/mutation-consistency*.test.ts` hold that line (below).
+
+### What changed and why
+
+- **Search reads short columns, and prepares text once per checksum.** The window scan
+  (`searchDocumentRepository.scanHeads`, newest-popular first by `popularityScore DESC, id DESC`)
+  reads ids, titles, boosts and the checksum only. `SqlSearchDriver` keeps normalised text in a
+  per-process LRU (`SEARCH_MEMO_MAX_DOCUMENTS`, default 10,000; 0 disables) and fetches the long
+  columns (`texts`) only for documents whose checksum it has not seen. Every query compares the
+  checksum it just read, so an edited document can never be scored on its old text. Ranking is
+  identical to the unmemoised path. When the index outgrows the window (2,000 documents) and the
+  window holds too few precise hits, `headsWithEveryWord` supplements it; at 1,000 products it never
+  runs.
+- **Pricing configuration is cached; pages still are not.** Shipping zone per pincode
+  (`price:ship:zone:`), rates per zone (`price:ship:rates:`), the default tax class and the default
+  customer group (`price:set:`) are wrapped for `PRICING_CACHE_TTL_SECONDS`. `invalidatePricing`
+  drops both prefixes and every group, tax-class, zone, rate and pincode write calls it. Discount
+  rules and coupons are NOT cached (usage counts move at checkout).
+- **A cart read loads its facts and its quote once**, and hands both to validation, lines and
+  delivery (`cart.service.toDto`).
+- **Cards and the pricing context select only what they render** (`storefront.repository`
+  `cardInclude` is a `select`; `pricingContext.loader` selects its product columns).
+- **PM2 caps the old-generation heap** (`node_args: ['--max-old-space-size=384']`, beside
+  `max_memory_restart: '512M'`). The flag is not an RSS limit: V8 reports a 576 MB
+  `heap_size_limit` (old space plus young-generation reserve), and RSS also carries the Prisma
+  engine. Without it, V8's lazy collection let RSS cross 512 MB under load and PM2 would recycle
+  healthy workers.
+- **Test teardown drains catalog events and the listing reconciler** before closing Prisma
+  (`tests/setup.ts`). With work still in flight, `DROP DATABASE` sat in "Waiting for table metadata
+  lock" until the 60 s hook timeout; draining first removed it.
+- `queryBudgets.ts` baselines were re-measured; no ceiling moved. The ceilings stay above the
+  cold-configuration count on purpose: configuration is warm in production, pages are cold.
+
+### Not done, on purpose
+
+Export batching (it fixed a heap OOM at 50,000 products, irrelevant at 1,000) and a composite
+`SearchDocument` window index (no gain at 10,000). A `LIKE` prefilter for search was measured slower
+and rejected.
+
+### Consistency tests
+
+`tests/mutation-consistency.test.ts` (memory cache) and `tests/mutation-consistency-redis.test.ts`
+(real Redis, when `CLEARWOOD_TEST_REDIS_URL` is set) share `tests/helpers/consistencySuite.ts`:
+admin writes through the API, public reads with caches warmed first. They cover price, inventory,
+category, visibility/unpublish, variant price, group discount, default-group discount, tax rate,
+shipping rate, search rename, memo-vs-no-memo ranking and the card key set. Each was verified to
+fail when, in turn, `dropStorefront` was a no-op, product/inventory events skipped reindexing,
+`invalidatePricing` kept `price:set:`/`price:ship:`, or the memo ignored the checksum.
+
+### Harness
+
+`tests/perf-baseline.test.ts` (opt-in, `CLEARWOOD_PERF_BASELINE=1`): `CLEARWOOD_PERF_PRODUCTS`,
+`_RUNS`, `_CONCURRENCY` (e.g. `1,10,25,50,100`), `_SECONDS`, `_REDIS_URL`, `_NODE_ARGS`,
+`_ONLY` (scenario keys; `none` = load only), `_OUT` (JSON), `_CPU_PROFILE_DIR`, `_EXPORT=1`. The load
+test forks `tests/helpers/perfServer.ts` with an 8-connection pool. Both benchmarks build their
+catalog with `tests/helpers/benchCatalog.ts`.
+
+### Measured at 1,000 products (one local machine: 16 cores, MySQL 8.0.46 in Docker; not a production guarantee)
+
+| Path (cold / warm p50)    | ms      | Statements (cold) |
+| ------------------------- | ------- | ----------------- |
+| Category grid + facets    | 53 / 8  | 28                |
+| Filters                   | 40 / 9  | 31                |
+| Search                    | 69 / 62 | 37                |
+| PDP                       | 58 / 4  | 72                |
+| Quote (3 lines + pincode) | 15 / 14 | 13                |
+| Cart (10 lines)           | 35 / 35 | 30                |
+
+One process, Redis, heap flag, pool 8: ~230 rps at 10 concurrent (p95 125 ms), ~257 rps at 100
+(p95 919 ms, queueing), 0 errors, RSS 353-409 MB (590-606 MB without the flag, same throughput),
+live heap after GC ~72 MB. With the memo disabled, warm search is ~102 ms and throughput at 10
+concurrent falls to ~104 rps.
+
+## 47. The dynamic catalog: admin control over time (catalog management phase)
+
+The admin owns the catalog; MySQL holds it; Redis only remembers answers. Nothing below names a
+category, attribute or product in code - behaviour hangs off `Category.kind`, product flags,
+settings and rules.
+
+### Visibility is effective, not per-row
+
+A category is live only if it and every ancestor are active and not deleted
+(`category.service.liveCategoryIds`, one fresh query - callers sit behind their own caches).
+Deactivating a parent hides its whole subtree - tree, detail, listings, navigation, search, CMS,
+redirects, PDP breadcrumbs - without touching the children's flags. A category cannot be restored
+under a deleted parent (409 `CATEGORY_PARENT_DELETED`). Collections honour `startsAt`/`endsAt`
+everywhere they surface (`storefront.repository.liveCollectionWhere`).
+
+### Rule categories and time-aware merchandising (`modules/storefront/merchandising.ts`)
+
+- `NEW_ARRIVALS`, `SPECIAL_COLLECTION` and `MAKE_YOUR_OWN` categories are rules: they list their
+  explicit links plus every product in the parent's subtree (the whole catalog for a root) with the
+  fact - new arrival, `isSpecialCollection`, `allowCustomization`. Judged in the listing SQL.
+- New arrival = the `isNewArrival` override, or live (`publishedAt`, else `createdAt`) within
+  `catalog.new_arrival_days` (default 30; 0 = flag only). Featured = `isFeatured` until
+  `featuredUntil`. Cards, the PDP, the listing filter, automatic-collection rules and the search
+  boost all use the same predicates.
+- Badges are data: `catalog.badges` names which codes show and their words; a product's own
+  `badgeText`/`badgeColor` comes first. No badge word exists in code.
+- Publishing takes an optional `publishAt`: a future date schedules the product (`SCHEDULED`).
+
+### The clock is reconciled, not flushed
+
+The listing reconciler (§45, one MySQL lease across PM2 workers, watermark per span) gained a
+schedule phase (`catalogSchedule.repository`, half-open spans): scheduled products that went live
+get their search documents, ended featured windows lose their boost, new-arrival expiries and
+collection windows drop the caches that judged them (`invalidateSchedule`), AUTOMATIC collections
+are re-evaluated quietly (announced only when membership changed) and `productCountCache` is
+recomputed - rule categories counted by the listing SQL itself - whenever the catalog was written,
+a boundary crossed or the UTC day changed.
+
+### Admin surfaces added
+
+- `GET/PUT /admin/catalog/settings` - page sizes, out-of-stock policy, new-arrival window, badges
+  (merged per code; `null` switches one off). Audited as `SETTING_CHANGED`.
+- `GET /admin/catalog/categories/:id/products`, `POST .../products/reorder` - the curated order
+  `sort=CURATED` shows. `ProductCategory.position` is the product's place in that category: kept
+  when links are rewritten, appended for a new link. Primary is `isPrimary`, never position 0.
+- `POST /admin/catalog/collections/:id/restore`; the list takes `includeDeleted`.
+- Bulk: `ACTIVATE` passes the publish gate and needs `catalog.product.publish`; `ADD_CATEGORY`,
+  `REMOVE_CATEGORY`, `SET_MERCHANDISING`; targets validated once; targeted invalidation.
+- Admin product list: compact rows (`publication`, flags, thumbnail) and filters for collection,
+  publication, visibility, merchandising flags, customizable, made-to-order and created dates;
+  `q` also matches variant SKUs; the stock filter uses the availability rule.
+
+### Variants, import, media
+
+- A variant's options must be active, variant-defining for the product (globally or via its
+  primary category), and use the same attributes as its siblings (422
+  `ATTRIBUTE_NOT_VARIANT_DEFINING` / `VARIANT_OPTIONS_INCONSISTENT`). The option matrix carries
+  each value's `description`.
+- CSV import applies the admin API's rules: enum and number validation, live references only,
+  category cycle/depth checks with subtree path rewrites, variant options from the export's
+  `attributeCodes`/`attributeValueCodes`, price rules validated by `priceAdjustmentCreateSchema`.
+  A column the file does not carry is never written (it used to reset prices to 0).
+- Moving a gallery item between product and variant moves its `MediaUsage` row; every gallery
+  change refreshes `completenessScore`.
+
+### Contract work and enquiries
+
+`Contract Based Work` categories are kind `SERVICE` with `leadFormKey = 'contract-work'`: the
+storefront shows the form, not a grid. `POST /api/v1/enquiries` (rate limited, CSRF when signed
+in, honeypot) accepts a form key only while a live surface offers it - an active `LEAD_FORM`
+navigation item, a live category's `leadFormKey`, or an active `LEAD_FORM_CTA` block. Admins work
+the queue at `/admin/enquiries` (`lead.enquiry.read/update`; moving the owner needs
+`lead.enquiry.assign`; optimistic locking; the audit diff holds workflow fields only). An enquiry is
+never an order: nothing is priced, reserved or paid. No mail is sent (SMTP is on hold); Prompt 10B
+builds its lead forms on this.
+
+### The seed is create-only
+
+Categories, attributes, collections and navigation items that exist are the admin's: a re-run
+(every deploy) only adds what is missing. A category is matched by slug or by a slug it was
+renamed from (`SlugRedirect`); a deleted one stays deleted with its seeded subtree; attribute links
+are written only for categories the run creates. Navigation items match on what they point at,
+menu-wide for categories (§48: a deleted item is no longer re-added). Demo data (`SEED_DEMO`)
+still resets itself in development.
+
+## 48. Catalog hardening: production seeds, scoped invalidation, relationships (Prompt 6)
+
+No schema change and no migration: everything below is code over the existing tables.
+
+### Seeds establish defaults; they never control production
+
+Every structural seed is CREATE-ONLY, deleted rows included, so a deploy's re-seed can add what
+is missing but never rewrite, reorder, re-activate or resurrect what an admin changed:
+
+- Tax classes and customer groups are matched on `code`; a seeded default is only made default
+  when no active default exists (never a second default, never a demoted admin choice).
+- Rows the admin API HARD-deletes leave nothing to match, so the seed only writes them together
+  with their owner: navigation items only for a menu, category or collection created in the same
+  run (`seedCategories`/`seedCollections` return what they created); attribute groups only
+  alongside a new attribute that needs them; search synonyms once, recorded by the private
+  `seed.search_synonyms` setting.
+- Collections renamed by an admin are found through their `SlugRedirect`, like categories.
+- Brands are create-only; the demo catalog is attached only to demo SKUs and only to a brand the
+  same run created, so an admin-created or deliberately unbranded product is never re-branded.
+- Settings seeds keep the stored VALUE; only code-owned metadata (group, type, public flag) is
+  refreshed - the admin API writes values only.
+
+`tests/seed-idempotency.test.ts` edits and deletes every one of these before re-seeding.
+
+### Invalidation is scoped to what was written
+
+- CSV import collects what each chunk wrote and announces it only after that chunk commits:
+  PRODUCT/VARIANT drop the product payloads once and re-price and re-index exactly those
+  products (`invalidateProducts`); CATEGORY invalidates the nodes (the tree when one was created
+  or moved); ATTRIBUTE_VALUE each changed attribute; PRICE_ADJUSTMENT the reach of every rule
+  before and after (`announcePriceRules`, the admin API's own path). Navigation, settings,
+  category-attribute and CMS FAQ/banner caches stay warm; a rolled-back chunk announces nothing.
+- CMS pages are storefront renders of catalog cards: every storefront invalidation now drops
+  `cms:page:` too, so a product, price, stock or badge change shows in cached CMS product blocks.
+- `Category.productCountCache` follows the writes that move it at once (a coalesced per-process
+  recount, `categoryCounts.service`, after product, removal and category events that can change
+  a count); the reconciler still recounts on its schedule as the cross-worker backstop.
+
+### Product relationships
+
+`ProductRelation.type` is a code (D2): RELATED, SIMILAR, ALTERNATIVE, REPLACEMENT, COMPLEMENTARY,
+FREQUENTLY_BOUGHT (frequently bought together), CROSS_SELL, UPSELL, BUNDLE_ITEM, VARIANT_OF_STYLE -
+a new kind is one more code. `PUT /admin/catalog/products/:id/relations` refuses a self-relation,
+the same product twice under one type and deleted products (422); a draft or hidden target may be
+curated and simply never shows. The PDP adds `relationGroups` (every type in that order, members
+by `position`, only products a shopper can open) beside `related` and `frequentlyBoughtTogether`.
+`GET /catalog/products/:slug/related?type=` returns exactly that curated group - never the
+category fallback, which only the untyped call uses. SIMILAR is mirrored onto the other product.
+
+### Contract work stays out of the purchasable catalog
+
+A `SERVICE` category takes enquiries, not products: filing a product under one is refused on every
+write path (422 `CATEGORY_NOT_PURCHASABLE` - admin API, bulk ADD/MOVE, CSV import), and a category
+holding products cannot become one (409 `CATEGORY_HAS_PRODUCTS`). The category tree and the
+landing expose `kind` and `leadFormKey`, so the storefront opens the right form without naming a
+category. The enquiry limiter is keyed per client (rotating the typed email buys nothing).
+Enquiry notifications stay on hold with SMTP.

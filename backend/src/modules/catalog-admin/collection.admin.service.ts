@@ -1,12 +1,13 @@
 import type { Collection } from '@prisma/client';
 
+import type { MediaUsageType } from '@shared/enums';
 import type {
+  AdminCollectionListQuery,
   CollectionCreateInput,
   CollectionProductsInput,
   CollectionUpdateInput,
   ReorderInput,
 } from '@shared/schemas/catalogAdmin';
-import type { ListQuery } from '@shared/schemas/common';
 import type { CollectionRules } from '@shared/schemas/catalogAdmin';
 
 import { prisma } from '../../config/prisma';
@@ -16,6 +17,7 @@ import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { ensureUniqueSlug, slugify } from '../../utils/slug';
 import { mediaUsageService } from '../media/media-usage.service';
+import { collectionRulesService } from '../storefront/collectionRules.service';
 
 import { catalogCacheService } from './catalogCache.service';
 import { slugRedirectService } from './slugRedirect.service';
@@ -40,14 +42,47 @@ const slugOwner = {
   },
 };
 
+const MEDIA_FIELDS = [
+  ['imageMediaId', 'COLLECTION_IMAGE'],
+  ['bannerMediaId', 'COLLECTION_BANNER'],
+  ['mobileBannerMediaId', 'COLLECTION_BANNER'],
+] as const satisfies readonly (readonly [keyof Collection, MediaUsageType])[];
+
+/** Keeps the usage ledger equal to the three image columns, so a hard delete stays safe. */
+async function syncMediaUsage(collection: Collection, previous?: Collection): Promise<void> {
+  for (const [field, usageType] of MEDIA_FIELDS) {
+    const next = collection[field];
+    const before = previous?.[field] ?? null;
+    if (next === before) continue;
+    if (before) {
+      await mediaUsageService.detach({
+        mediaId: before,
+        usageType,
+        entityId: collection.id,
+        field,
+      });
+    }
+    if (next) {
+      await mediaUsageService.attach({ mediaId: next, usageType, entityId: collection.id, field });
+    }
+  }
+}
+
+/** An automatic collection's membership follows its rules from the moment they change. */
+async function evaluateIfAutomatic(collection: Collection): Promise<void> {
+  if (collection.type === 'AUTOMATIC' && collection.rulesJson && !collection.deletedAt) {
+    await collectionRulesService.evaluate(collection.id);
+  }
+}
+
 export const collectionAdminService = {
-  async list(query: ListQuery): Promise<PageResult<Collection>> {
-    const args = { where: notDeleted };
+  async list(query: AdminCollectionListQuery): Promise<PageResult<Collection>> {
+    const args = { where: query.includeDeleted ? {} : notDeleted };
     const [items, total] = await Promise.all([
       prisma.collection.findMany({
         ...args,
         ...skipTake(query),
-        orderBy: [{ position: 'asc' }, { name: 'asc' }],
+        orderBy: [{ position: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       }),
       prisma.collection.count(args),
     ]);
@@ -75,6 +110,7 @@ export const collectionAdminService = {
         type: input.type,
         description: input.description ?? null,
         rulesJson: rulesColumn.serialize(input.rules ?? null),
+        imageMediaId: input.imageMediaId ?? null,
         bannerMediaId: input.bannerMediaId ?? null,
         mobileBannerMediaId: input.mobileBannerMediaId ?? null,
         isActive: input.isActive,
@@ -86,22 +122,26 @@ export const collectionAdminService = {
       },
     });
 
-    if (collection.bannerMediaId) {
-      await mediaUsageService.attach({
-        mediaId: collection.bannerMediaId,
-        usageType: 'COLLECTION_BANNER',
-        entityId: collection.id,
-        field: 'bannerMediaId',
-      });
-    }
-
+    await syncMediaUsage(collection);
     await catalogCacheService.invalidateCollection();
-    return collection;
+    await evaluateIfAutomatic(collection);
+    return this.get(collection.id);
   },
 
   async update(id: string, input: CollectionUpdateInput): Promise<Collection> {
     const existing = await this.get(id);
     const { version, slug: requestedSlug, rules, ...rest } = input;
+
+    const nextType = rest.type ?? existing.type;
+    const nextRules = rules === undefined ? existing.rulesJson : rules;
+    if (nextType === 'AUTOMATIC' && !nextRules) {
+      throw AppError.validation('An automatic collection needs rules', { field: 'rules' });
+    }
+    const effectiveStart = rest.startsAt === undefined ? existing.startsAt : rest.startsAt;
+    const effectiveEnd = rest.endsAt === undefined ? existing.endsAt : rest.endsAt;
+    if (effectiveStart && effectiveEnd && effectiveEnd <= effectiveStart) {
+      throw AppError.validation('endsAt must be after startsAt', { field: 'endsAt' });
+    }
 
     const data: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(rest)) {
@@ -122,7 +162,10 @@ export const collectionAdminService = {
       await slugRedirectService.recordSlugChange('COLLECTION', id, existing.slug, slug);
     }
 
+    const updated = await this.get(id);
+    await syncMediaUsage(updated, existing);
     await catalogCacheService.invalidateCollection();
+    if (rules !== undefined || rest.type !== undefined) await evaluateIfAutomatic(updated);
     return this.get(id);
   },
 
@@ -133,7 +176,24 @@ export const collectionAdminService = {
       data: { deletedAt: new Date(), isActive: false },
     });
     await mediaUsageService.detachEntity('COLLECTION_BANNER', id);
+    await mediaUsageService.detachEntity('COLLECTION_IMAGE', id);
     await catalogCacheService.invalidateCollection();
+  },
+
+  /** Undoes a soft delete; the slug was never released, so it is still this collection's. */
+  async restore(id: string): Promise<Collection> {
+    const collection = await prisma.collection.findUnique({ where: { id } });
+    if (!collection) throw AppError.notFound('Collection not found', { id });
+    if (!collection.deletedAt) return collection;
+
+    const restored = await prisma.collection.update({
+      where: { id },
+      data: { deletedAt: null, isActive: true, version: { increment: 1 } },
+    });
+    await syncMediaUsage(restored);
+    await catalogCacheService.invalidateCollection();
+    await evaluateIfAutomatic(restored);
+    return this.get(id);
   },
 
   /** MANUAL collections only — an automatic one is defined by its rules. */

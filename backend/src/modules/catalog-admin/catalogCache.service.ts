@@ -16,9 +16,9 @@ import { catalogEvents } from '../../events/catalogEvents';
  *   nav:*          navigation menus (NavigationService)
  *   prod:*         product detail/list caches (Prompt 7)
  *   coll:*         collection caches (Prompt 7)
- *   price:set:*    resolved pricing settings (Prompt 6)
+ *   price:set:*    resolved pricing settings (Prompt 6), default tax class and group (5B)
  *   price:quote:*  public quotes keyed by contextHash (Prompt 6)
- *   price:ship:*   shipping zones and rates (Prompt 6)
+ *   price:ship:*   shipping zone per pincode, rates per zone (Prompt 6; used since 5B)
  *   sf:set:*       storefront settings: page sizes, popularity weights (Prompt 7)
  *   sf:list:*      product listings keyed by their filter hash (Prompt 7)
  *   sf:facet:*     facet counts keyed by scope + filter hash (Prompt 7)
@@ -89,13 +89,17 @@ async function drop(...prefixes: string[]): Promise<void> {
   }
 }
 
-/** Everything the storefront renders from the catalog: listings, facets, PDPs, autocomplete. */
+/**
+ * Everything the storefront renders from the catalog: listings, facets, PDPs, autocomplete, and
+ * CMS pages, whose product, category and collection blocks are hydrated into the cached render.
+ */
 async function dropStorefront(): Promise<void> {
   await drop(
     CATALOG_CACHE_PREFIXES.storefrontListing,
     CATALOG_CACHE_PREFIXES.storefrontFacets,
     CATALOG_CACHE_PREFIXES.storefrontPdp,
     CATALOG_CACHE_PREFIXES.storefrontSuggest,
+    CATALOG_CACHE_PREFIXES.cmsPage,
   );
 }
 
@@ -110,54 +114,122 @@ async function dropProductCaches(): Promise<void> {
   await dropStorefront();
 }
 
+/**
+ * Where product images are rendered: the products' own pages (PDP keys start with the slug), and
+ * every payload made of product cards. Facets, trees and prices carry no product image.
+ */
+function mediaBearingPrefixes(productSlugs: string[]): string[] {
+  return [
+    ...productSlugs.map((slug) => `${CATALOG_CACHE_PREFIXES.storefrontPdp}${slug}:`),
+    CATALOG_CACHE_PREFIXES.storefrontListing,
+    CATALOG_CACHE_PREFIXES.storefrontSuggest,
+    CATALOG_CACHE_PREFIXES.cmsPage,
+  ];
+}
+
 export const catalogCacheService = {
   prefixes: CATALOG_CACHE_PREFIXES,
 
-  /** Any structural change to the tree: create, move, reorder, rename, activate, delete. */
-  async invalidateCategoryTree(): Promise<void> {
+  /**
+   * Any structural change to the tree: create, move, reorder, rename, activate, delete.
+   * `categoryIds` are the nodes whose subtree changed (their products' search text is rebuilt);
+   * omitted means any node may have, [] that no product's text changed.
+   */
+  async invalidateCategoryTree(categoryIds?: string[]): Promise<void> {
     await drop(
       CATALOG_CACHE_PREFIXES.categoryTree,
       CATALOG_CACHE_PREFIXES.category,
       CATALOG_CACHE_PREFIXES.navigation,
+      CATALOG_CACHE_PREFIXES.cmsPage,
     );
     await dropStorefront();
-    catalogEvents.emit('category.changed', { reason: 'tree' });
+    catalogEvents.emit('category.changed', {
+      reason: 'tree',
+      ...(categoryIds ? { categoryIds } : {}),
+    });
   },
 
-  async invalidateCategory(): Promise<void> {
+  async invalidateCategory(categoryIds?: string[]): Promise<void> {
     await drop(
       CATALOG_CACHE_PREFIXES.category,
       CATALOG_CACHE_PREFIXES.categoryTree,
       CATALOG_CACHE_PREFIXES.categoryAttributes,
       CATALOG_CACHE_PREFIXES.navigation,
+      CATALOG_CACHE_PREFIXES.cmsPage,
     );
     await dropStorefront();
-    catalogEvents.emit('category.changed', { reason: 'detail' });
+    catalogEvents.emit('category.changed', {
+      reason: 'detail',
+      ...(categoryIds ? { categoryIds } : {}),
+    });
   },
 
-  async invalidateAttributes(): Promise<void> {
+  /**
+   * `attributeId`: that attribute's names or labels may have changed (its products are
+   * re-indexed); 'structure': groups, ordering or category mapping, no product text; omitted:
+   * anything may have changed.
+   */
+  async invalidateAttributes(affects?: string | 'structure'): Promise<void> {
     await drop(CATALOG_CACHE_PREFIXES.categoryAttributes, CATALOG_CACHE_PREFIXES.product);
     await dropStorefront();
-    catalogEvents.emit('attribute.changed', { reason: 'attribute-write' });
+    catalogEvents.emit('attribute.changed', {
+      reason: 'attribute-write',
+      ...(affects === 'structure'
+        ? { textUnchanged: true }
+        : affects
+          ? { attributeId: affects }
+          : {}),
+    });
+  },
+
+  /** A product's position inside a category moved: curated grids and CMS product blocks. */
+  async invalidateCategoryMerchandising(): Promise<void> {
+    await drop(CATALOG_CACHE_PREFIXES.cmsPage);
+    await dropStorefront();
   },
 
   async invalidateNavigation(): Promise<void> {
     await drop(CATALOG_CACHE_PREFIXES.navigation);
   },
 
+  /** `productCountCache` moved: trees, category detail, landings and CMS category blocks. */
+  async invalidateCategoryCounts(): Promise<void> {
+    await drop(CATALOG_CACHE_PREFIXES.categoryTree, CATALOG_CACHE_PREFIXES.category);
+    await dropStorefront();
+  },
+
   /**
    * Every product write. Pass the id whenever it is known: the search indexer can then refresh
-   * exactly that document instead of rebuilding the whole product index.
+   * exactly that document. Without one (brand writes) only the caches go - nothing about a brand
+   * moves a price, so it does not ask for the catalog to be re-priced.
    */
   async invalidateProduct(productId?: string, reason = 'product-write'): Promise<void> {
     await dropProductCaches();
 
     if (productId) catalogEvents.emit('product.changed', { productId, reason });
-    else catalogEvents.emit('pricing.changed', { reason });
   },
 
-  /** Called by every pricing write: adjustments, tiers, price lists, coupons, zones, settings. */
-  async invalidatePricing(): Promise<void> {
+  /**
+   * Many products written at once outside their services (CSV import): the product caches drop
+   * once, and exactly these products are re-priced and re-indexed in batches - not the catalog.
+   */
+  async invalidateProducts(productIds: string[], reason: string): Promise<void> {
+    if (productIds.length === 0) return;
+    await dropProductCaches();
+    catalogEvents.emit('pricing.changed', { productIds, reason });
+  },
+
+  /**
+   * Called by every pricing write: adjustments, tiers, price lists, coupons, zones, settings.
+   *
+   * `productIds` - the write can only move these products' catalog prices (they are re-priced
+   * now); omitted - any product may have moved (one leased, coalesced re-price of the whole
+   * index, listingReconciler); `affectsCatalogPrices: false` - checkout-only (coupons, discount
+   * rules, shipping, settings, tax, group membership): caches only.
+   */
+  async invalidatePricing(
+    scope: { productIds?: string[]; affectsCatalogPrices?: boolean } = {},
+  ): Promise<void> {
     await drop(
       CATALOG_CACHE_PREFIXES.pricingSettings,
       CATALOG_CACHE_PREFIXES.pricingQuote,
@@ -166,8 +238,46 @@ export const catalogCacheService = {
       CATALOG_CACHE_PREFIXES.product,
     );
     await dropStorefront();
-    // A rule can touch any product, so the indexed price range has to be rebuilt, not patched.
+
+    if (scope.affectsCatalogPrices === false) return;
+    if (scope.productIds) {
+      if (scope.productIds.length > 0) {
+        catalogEvents.emit('pricing.changed', {
+          productIds: scope.productIds,
+          reason: 'pricing-write',
+        });
+      }
+      return;
+    }
     catalogEvents.emit('pricing.changed', { reason: 'pricing-write' });
+  },
+
+  /** A price window opened or closed: every cached payload that shows a price is suspect. */
+  async invalidatePrices(): Promise<void> {
+    await drop(
+      CATALOG_CACHE_PREFIXES.pricingQuote,
+      CATALOG_CACHE_PREFIXES.product,
+      CATALOG_CACHE_PREFIXES.cmsPage,
+    );
+    await dropStorefront();
+  },
+
+  /**
+   * The clock moved the catalog (listingReconciler): a scheduled product went live, a featured,
+   * new-arrival or collection window ended, or category counts were recomputed. Caches only -
+   * the reconciler has already re-indexed what needed it, so nothing is announced.
+   */
+  async invalidateSchedule(): Promise<void> {
+    await drop(
+      CATALOG_CACHE_PREFIXES.product,
+      CATALOG_CACHE_PREFIXES.categoryTree,
+      CATALOG_CACHE_PREFIXES.category,
+      CATALOG_CACHE_PREFIXES.collection,
+      CATALOG_CACHE_PREFIXES.navigation,
+      CATALOG_CACHE_PREFIXES.cmsPage,
+      CATALOG_CACHE_PREFIXES.cmsSitemap,
+    );
+    await dropStorefront();
   },
 
   async invalidateCollection(): Promise<void> {
@@ -190,6 +300,21 @@ export const catalogCacheService = {
 
   async invalidateStorefront(): Promise<void> {
     await dropStorefront();
+  },
+
+  /** A product's gallery changed: its own product pages and the payloads that show its image. */
+  async invalidateProductMedia(productSlug: string): Promise<void> {
+    await drop(...mediaBearingPrefixes([productSlug]));
+  },
+
+  /** An asset's bytes, alt text or visibility changed; `productSlugs` are the products showing it. */
+  async invalidateMedia(productSlugs: string[]): Promise<void> {
+    const productPayloads =
+      productSlugs.length > 0
+        ? mediaBearingPrefixes(productSlugs)
+        : [CATALOG_CACHE_PREFIXES.cmsPage];
+    // CMS pages and banners can show any asset directly.
+    await drop(...productPayloads, CATALOG_CACHE_PREFIXES.cmsBanner);
   },
 
   /**

@@ -44,23 +44,50 @@ const SYNONYMS: SeedSynonym[] = [
   { term: 'sofa cum bed', synonyms: ['sofa bed', 'sofa-cum-bed', 'futon'] },
 ];
 
-export async function seedSearchSynonyms(): Promise<void> {
-  for (const entry of SYNONYMS) {
-    const synonymsJson = JSON.stringify(entry.synonyms);
+/**
+ * Seeded ONCE, then admin-managed. Synonyms are hard-deleted by the admin API, so "missing" cannot
+ * be told apart from "removed"; a marker setting records which starter set was written, and a
+ * re-run neither rewrites an edited expansion nor brings back a deleted term.
+ */
+const SEEDED_MARKER = 'seed.search_synonyms';
+const STARTER_SET = 'starter-set-v1';
 
-    await prisma.searchSynonym.upsert({
-      where: { term: entry.term },
-      // Structural: the expansion set is kept in sync, an admin's isActive flag is not touched.
-      update: { synonymsJson, isTwoWay: entry.isTwoWay ?? true },
-      create: {
+export async function seedSearchSynonyms(): Promise<void> {
+  const marker = await prisma.appSetting.findUnique({ where: { key: SEEDED_MARKER } });
+  if (marker) {
+    log('search-synonyms', `${marker.value} already seeded; synonyms are the admin's now`);
+    return;
+  }
+
+  // An install seeded before the marker existed already has its synonyms: mark, do not re-add.
+  const existing = await prisma.searchSynonym.count();
+  if (existing === 0) {
+    await prisma.searchSynonym.createMany({
+      data: SYNONYMS.map((entry) => ({
         term: entry.term,
-        synonymsJson,
+        synonymsJson: JSON.stringify(entry.synonyms),
         isTwoWay: entry.isTwoWay ?? true,
         isActive: true,
         note: entry.note ?? null,
-      },
+      })),
+      skipDuplicates: true,
     });
   }
 
-  log('search-synonyms', `${SYNONYMS.length} synonym sets ensured`);
+  await prisma.appSetting.create({
+    data: {
+      key: SEEDED_MARKER,
+      value: STARTER_SET,
+      group: 'seed',
+      valueType: 'string',
+      isPublic: false,
+    },
+  });
+
+  log(
+    'search-synonyms',
+    existing === 0
+      ? `${SYNONYMS.length} synonym sets seeded`
+      : `${existing} existing synonym sets kept; marked as seeded`,
+  );
 }

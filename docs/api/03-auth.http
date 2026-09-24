@@ -11,10 +11,14 @@
 @api = {{baseUrl}}/api/v1
 @adminEmail = admin@clearwood.local
 @adminPassword = ChangeMe@12345
+# Step 1b changes the password. To run the file again from the top, restore the seed credentials
+# first: npm run admin:reset-password --workspace backend
+@adminNewPassword = Sheesham-Walnut-2031
 
 ### ---------------------------------------------------------------- ADMIN ---
 
-### 1. Sign in as the seeded SUPER_ADMIN (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+### 1. Sign in as the seeded bootstrap ADMIN (sets cw_adm_at / cw_adm_rt / cw_adm_csrf).
+###    An ordinary ADMIN - never SUPER_ADMIN - with mustChangePassword=true.
 # @name adminLogin
 POST {{api}}/admin/auth/login
 Content-Type: application/json
@@ -27,7 +31,23 @@ Content-Type: application/json
 ###
 @adminToken = {{adminLogin.response.body.$.data.tokens.accessToken}}
 
-### 2. Who am I — roles + the full effective permission list (86 for SUPER_ADMIN)
+### 1a. ENFORCED -> 403 PASSWORD_CHANGE_REQUIRED on every admin route until the password changes.
+###     Only /auth/me, /auth/change-password, /auth/logout, /auth/logout-all and /auth/sessions stay open.
+GET {{api}}/admin/catalog/categories?depth=1
+Authorization: Bearer {{adminToken}}
+
+### 1b. Change it. The same session keeps working; the new password must differ from the current
+###     one and can never be the published placeholder (422 otherwise).
+POST {{api}}/admin/auth/change-password
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "currentPassword": "{{adminPassword}}",
+  "newPassword": "{{adminNewPassword}}"
+}
+
+### 2. Who am I — roles + the effective permission list (79 for ADMIN, 86 for SUPER_ADMIN)
 GET {{api}}/admin/auth/me
 Authorization: Bearer {{adminToken}}
 
@@ -38,11 +58,12 @@ Authorization: Bearer {{adminToken}}
 ### 4. Anonymous -> 401 NOT_AUTHENTICATED
 GET {{api}}/admin/catalog/categories
 
-### 5. The permission registry, grouped for the UI
+### 5. The permission registry, grouped for the UI. Needs system.role.read, which only SUPER_ADMIN
+###    holds by default: the bootstrap ADMIN gets 403 FORBIDDEN here.
 GET {{api}}/admin/permissions
 Authorization: Bearer {{adminToken}}
 
-### 6. Roles and their permission counts
+### 6. Roles and their permission counts (SUPER_ADMIN only, as above)
 GET {{api}}/admin/roles
 Authorization: Bearer {{adminToken}}
 
@@ -66,6 +87,20 @@ Content-Type: application/json
   "name": "Catalog Manager",
   "password": "Sheesham-Teak-2026",
   "roleCodes": ["CATALOG_MANAGER"]
+}
+
+### 9a. DENIED -> 403 ROLE_NOT_GRANTABLE. No amplification: an ADMIN can create accounts at or
+###     below its own level, never a SUPER_ADMIN (nor grant one, nor change or disable one ->
+###     403 ADMIN_USER_NOT_MANAGEABLE). Every refusal is audited as a CRITICAL PERMISSION_DENIED.
+POST {{api}}/admin/users
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "email": "would-be.super@clearwood.local",
+  "name": "Would Be Super",
+  "password": "Sheesham-Teak-2026",
+  "roleCodes": ["SUPER_ADMIN"]
 }
 
 ### 10. Sign in as that manager

@@ -1,4 +1,4 @@
-import type { Env } from '../../config/env';
+import { resolveShippingDriver, type Env } from '../../config/env';
 import { logger } from '../../config/logger';
 
 import { ManualShippingDriver } from './manual.shipping.driver';
@@ -57,9 +57,21 @@ export type { ShippingHttpClient } from './shiprocket.shipping.driver.UNVERIFIED
  * This is only the fallback used when a shipment does not name one — providers are rows in the
  * database, so an admin can run Shiprocket for couriered parcels and manual dispatch for a
  * wardrobe on the same day without an environment change.
+ *
+ * Shiprocket is ON HOLD: a selection that is not enabled, not verified (production) or not
+ * configured falls back to manual with a warning rather than stopping the process.
  */
 export function createShipping(env: Env): ShippingProviderDriverContract {
-  switch (env.SHIPPING_DRIVER) {
+  const { driver, heldBack } = resolveShippingDriver(env);
+
+  if (heldBack) {
+    logger.warn(
+      { requested: env.SHIPPING_DRIVER, using: driver, reason: heldBack },
+      'SHIPPING_DRIVER=shiprocket is held back — falling back to manual, admin-driven fulfilment',
+    );
+  }
+
+  switch (driver) {
     case 'shiprocket':
       // Loud on purpose. This integration has never spoken to Shiprocket.
       logger.warn(

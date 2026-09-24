@@ -1,0 +1,172 @@
+### ClearWood Furnitures — Catalog management phase (dynamic catalog)
+### VS Code REST Client. Runs top to bottom; @variables carry state forward.
+### Everything here is data an admin changes without a deploy; the storefront reads it back.
+
+@host = http://localhost:7180
+@api = {{host}}/api/v1
+
+### 1. Sign in (sets cw_adm_at / cw_adm_rt / cw_adm_csrf)
+# @name adminLogin
+POST {{api}}/admin/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@clearwood.local",
+  "password": "ChangeMe@12345"
+}
+
+###
+@csrf = {{adminLogin.response.headers.$['set-cookie'][2]}}
+
+### ------------------------------------------------------------ settings
+
+### 2. Catalog settings: page sizes, out-of-stock policy, new-arrival window, badge words
+GET {{api}}/admin/catalog/settings
+
+### 3. Shorten the new-arrival window and reword one badge (badges merge per code; null = off)
+PUT {{api}}/admin/catalog/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "newArrivalDays": 21,
+  "badges": {
+    "NEW_ARRIVAL": { "label": "Just in", "color": "#7E8C77" },
+    "IN_HOUSE": { "label": "Made in our workshop", "color": null }
+  }
+}
+
+### 4. 422: the default page size may not exceed the maximum
+PUT {{api}}/admin/catalog/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "defaultPageSize": 90, "maxPageSize": 60 }
+
+### ------------------------------------------------------------ admin product table
+
+### 5. Compact rows, filtered server-side: publication state, merchandising, date range
+GET {{api}}/admin/catalog/products?publication=LIVE&customizable=true&isFeatured=true&createdFrom=2026-01-01&sort=createdAt&order=desc&limit=20
+
+# @name productPage
+GET {{api}}/admin/catalog/products?limit=1
+
+###
+@productId = {{productPage.response.body.data.0.id}}
+
+### 6. Schedule it: publishedAt in the future means SCHEDULED; the reconciler lists it on time
+POST {{api}}/admin/catalog/products/{{productId}}/publish
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "publishAt": "2026-10-01T04:30:00.000Z" }
+
+### 7. Publish now instead (no body)
+POST {{api}}/admin/catalog/products/{{productId}}/publish
+X-CSRF-Token: {{csrf}}
+
+### 8. Bulk merchandising: featured until a date, with the product's own badge
+POST {{api}}/admin/catalog/bulk
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{
+  "action": "SET_MERCHANDISING",
+  "ids": ["{{productId}}"],
+  "merchandising": {
+    "isFeatured": true,
+    "featuredUntil": "2026-10-15T18:29:00.000Z",
+    "badgeText": "Festive pick",
+    "badgeColor": "#B4613A"
+  }
+}
+
+### ------------------------------------------------------------ category merchandising
+
+# @name tree
+GET {{api}}/admin/catalog/categories/tree
+
+###
+@sofasId = {{tree.response.body.data.0.id}}
+
+### 9. A category's own products in the order its CURATED listing shows them
+# @name curated
+GET {{api}}/admin/catalog/categories/{{sofasId}}/products?limit=5
+
+###
+@firstLinked = {{curated.response.body.data.0.productId}}
+
+### 10. Move one to the front (422 for a product that is not in the category)
+POST {{api}}/admin/catalog/categories/{{sofasId}}/products/reorder
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "items": [{ "id": "{{firstLinked}}", "position": 0 }] }
+
+### 11. The storefront grid in curated order reflects it at once
+GET {{api}}/catalog/products?categorySlug=sofas&sort=CURATED&limit=5
+
+### ------------------------------------------------------------ rule categories
+
+### 12. "New Arrivals" is a rule: live within the window (or flagged), no manual tagging
+GET {{api}}/catalog/products?categorySlug=new-arrivals&limit=5
+
+### 13. "Special Collection" under Sofas lists every Sofas product flagged special
+GET {{api}}/catalog/products?categorySlug=special-collection-sofas&limit=5
+
+### ------------------------------------------------------------ collections
+
+# @name collections
+GET {{api}}/admin/catalog/collections?includeDeleted=true
+
+###
+@collectionId = {{collections.response.body.data.0.id}}
+
+### 14. Restore a soft-deleted collection (AUTOMATIC ones are re-evaluated)
+POST {{api}}/admin/catalog/collections/{{collectionId}}/restore
+X-CSRF-Token: {{csrf}}
+
+### ------------------------------------------------------------ contract work
+
+### 15. The contract-work service line: kind SERVICE, leadFormKey "contract-work"
+GET {{api}}/catalog/categories/contract-based-work
+
+### 16. A customer sends a project request from one of its pages (never an order)
+POST {{api}}/enquiries
+Content-Type: application/json
+
+{
+  "formKey": "contract-work",
+  "categorySlug": "custom-hotel-furniture",
+  "name": "Asha Rao",
+  "email": "asha@example.com",
+  "phone": "+91 98450 00000",
+  "city": "Bengaluru",
+  "companyName": "Lakeview Suites",
+  "quantity": 40,
+  "budgetPaise": 250000000,
+  "message": "Headboards and lounge chairs for 40 rooms.",
+  "details": { "rooms": 40, "timeline": "Q1 2027" }
+}
+
+### 17. 422: a form key that no live surface offers
+POST {{api}}/enquiries
+Content-Type: application/json
+
+{ "formKey": "not-offered", "name": "Test", "email": "t@example.com" }
+
+### 18. The admin queue (lead.enquiry.read)
+# @name enquiries
+GET {{api}}/admin/enquiries?status=NEW&formKey=contract-work
+
+###
+@enquiryId = {{enquiries.response.body.data.0.id}}
+
+GET {{api}}/admin/enquiries/{{enquiryId}}
+
+### 19. Move it along (lead.enquiry.update; assignedToId also needs lead.enquiry.assign)
+PATCH {{api}}/admin/enquiries/{{enquiryId}}
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "status": "CONTACTED", "adminNote": "Site visit booked", "version": 0 }

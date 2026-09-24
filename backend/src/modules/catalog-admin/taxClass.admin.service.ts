@@ -14,7 +14,11 @@ export const taxClassAdminService = {
   async list(query: ListQuery): Promise<PageResult<TaxClass>> {
     const args = { where: notDeleted };
     const [items, total] = await Promise.all([
-      prisma.taxClass.findMany({ ...args, ...skipTake(query), orderBy: { rateBp: 'asc' } }),
+      prisma.taxClass.findMany({
+        ...args,
+        ...skipTake(query),
+        orderBy: [{ rateBp: 'asc' }, { id: 'asc' }],
+      }),
       prisma.taxClass.count(args),
     ]);
     return pageResult(items, total, query);
@@ -36,7 +40,8 @@ export const taxClassAdminService = {
     });
 
     if (created.isDefault) await demoteOtherDefaults(created.id);
-    await catalogCacheService.invalidatePricing();
+    // Tax is applied after the unit price the listing index holds.
+    await catalogCacheService.invalidatePricing({ affectsCatalogPrices: false });
     return created;
   },
 
@@ -51,7 +56,7 @@ export const taxClassAdminService = {
     const updated = await prisma.taxClass.update({ where: { id }, data });
     if (updated.isDefault) await demoteOtherDefaults(id);
 
-    await catalogCacheService.invalidatePricing();
+    await catalogCacheService.invalidatePricing({ affectsCatalogPrices: false });
     return updated;
   },
 
@@ -75,7 +80,7 @@ export const taxClassAdminService = {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await catalogCacheService.invalidatePricing();
+    await catalogCacheService.invalidatePricing({ affectsCatalogPrices: false });
   },
 };
 

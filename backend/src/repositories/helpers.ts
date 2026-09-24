@@ -26,6 +26,9 @@ export function skipTake(query: Pick<ListQuery, 'page' | 'limit'>): { skip: numb
 /**
  * R10 — `sort` arrives from the query string, so it is matched against a per-repository allowlist
  * before it is ever handed to Prisma.
+ *
+ * Every ordering ends with `id`, so rows that tie on the sort field keep one order and a page
+ * boundary can neither repeat nor skip a row.
  */
 export function orderBy<TField extends string>(
   sort: string | undefined,
@@ -33,7 +36,7 @@ export function orderBy<TField extends string>(
   allowed: readonly TField[],
   fallback: Partial<Record<TField, SortOrder>>[],
 ): Record<string, SortOrder>[] {
-  if (!sort) return fallback as Record<string, SortOrder>[];
+  if (!sort) return withIdTiebreak(fallback as Record<string, SortOrder>[]);
 
   if (!(allowed as readonly string[]).includes(sort)) {
     throw AppError.validation(`Cannot sort by "${sort}"`, {
@@ -42,7 +45,11 @@ export function orderBy<TField extends string>(
     });
   }
 
-  return [{ [sort]: order }];
+  return withIdTiebreak([{ [sort]: order }]);
+}
+
+function withIdTiebreak(ordering: Record<string, SortOrder>[]): Record<string, SortOrder>[] {
+  return ordering.some((entry) => 'id' in entry) ? ordering : [...ordering, { id: 'asc' }];
 }
 
 export function pageResult<T>(items: T[], total: number, query: ListQuery): PageResult<T> {

@@ -13,9 +13,8 @@ import {
  * Production must not start while a secret is still the value shipped in `.env.example`.
  *
  * The placeholders are knowingly in place during development, which is why this cannot be a note
- * in a document: the note would be true and ignored. It is the same mechanism that stops the
- * UNVERIFIED shipping driver from booting, and it names EVERY offending key at once because the
- * person reading it is usually mid-deploy.
+ * in a document: the note would be true and ignored. The process refuses to start, and it names
+ * EVERY offending key at once because the person reading it is usually mid-deploy.
  */
 
 const exampleFile = path.resolve(__dirname, '..', '.env.example');

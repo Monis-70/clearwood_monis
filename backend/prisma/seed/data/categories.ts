@@ -14,6 +14,8 @@ export interface SeedCategory {
   isFeatured?: boolean;
   menuColumn?: number;
   shortDescription?: string;
+  /** The enquiry form a SERVICE category opens instead of a product grid. */
+  leadFormKey?: string;
   /** Attribute codes attached at this node; descendants inherit them. */
   attributes?: string[];
   children?: SeedCategory[];
@@ -36,7 +38,9 @@ export function categorySeo(
   name: string,
   parentName: string | null,
 ): { seoTitle: string; seoDescription: string; seoKeywords: string } {
-  const scope = parentName ? `${name} ${parentName}`.replace(/\s+/g, ' ').trim() : name;
+  // "Fabric Sofas" under "Sofas" is already scoped; "Special Collection" under it is not.
+  const scoped = parentName !== null && !name.toLowerCase().includes(parentName.toLowerCase());
+  const scope = scoped ? `${name} ${parentName}`.replace(/\s+/g, ' ').trim() : name;
   return {
     seoTitle: `${name} — Buy ${scope} Online | ClearWood Furnitures`,
     seoDescription:
@@ -49,6 +53,11 @@ export function categorySeo(
   };
 }
 
+/** A contract-work service line: requested through the shared contract-work enquiry form. */
+function service(name: string, slug: string): SeedCategory {
+  return { name, slug, kind: 'SERVICE', leadFormKey: 'contract-work' };
+}
+
 export const CATEGORY_TREE: SeedCategory[] = [
   {
     name: 'Sofas',
@@ -58,19 +67,19 @@ export const CATEGORY_TREE: SeedCategory[] = [
     attributes: ['COLOUR', 'FABRIC', 'SEATER', 'LEG_TYPE', 'FILLING', 'ARM_STYLE'],
     children: [
       { name: 'All Sofas', slug: 'all-sofas' },
-      { name: 'Fabric', slug: 'fabric-sofas' },
-      { name: 'Wooden Frame', slug: 'wooden-frame-sofas' },
-      { name: 'U-Shaped', slug: 'u-shaped-sofas' },
-      { name: 'Curved', slug: 'curved-sofas' },
-      { name: 'Contemporary', slug: 'contemporary-sofas' },
-      { name: 'Minimalist', slug: 'minimalist-sofas' },
-      { name: '3-Seater', slug: '3-seater-sofas' },
-      { name: '2-Seater', slug: '2-seater-sofas' },
-      { name: 'Single-Seater', slug: 'single-seater-sofas' },
+      { name: 'Fabric Sofas', slug: 'fabric-sofas' },
+      { name: 'Wooden Frame Sofas', slug: 'wooden-frame-sofas' },
+      { name: 'U-Shaped Sofas', slug: 'u-shaped-sofas' },
+      { name: 'Curved Sofas', slug: 'curved-sofas' },
+      { name: 'Contemporary Sofas', slug: 'contemporary-sofas' },
+      { name: 'Minimalist Sofas', slug: 'minimalist-sofas' },
+      { name: '3-Seater Sofas', slug: '3-seater-sofas' },
+      { name: '2-Seater Sofas', slug: '2-seater-sofas' },
+      { name: 'Single-Seater Sofas', slug: 'single-seater-sofas' },
       { name: '3+1+1 Sofa Sets', slug: '3-1-1-sofa-sets' },
       { name: 'Sofa-cum-Beds', slug: 'sofa-cum-beds' },
-      { name: 'L-Shaped', slug: 'l-shaped-sofas' },
-      { name: 'Leather', slug: 'leather-sofas', attributes: ['FABRIC'] },
+      { name: 'L-Shaped Sofas', slug: 'l-shaped-sofas' },
+      { name: 'Leather Sofas', slug: 'leather-sofas', attributes: ['FABRIC'] },
       { name: 'Chaise Loungers', slug: 'chaise-loungers' },
       { name: 'Outdoor Sofas', slug: 'outdoor-sofas' },
       { name: 'Diwans', slug: 'diwans' },
@@ -88,16 +97,16 @@ export const CATEGORY_TREE: SeedCategory[] = [
     attributes: ['COLOUR', 'FABRIC', 'LEG_TYPE', 'BACK_STYLE', 'ASSEMBLY_TYPE'],
     children: [
       { name: 'All Chairs', slug: 'all-chairs' },
-      { name: 'Lounge', slug: 'lounge-chairs' },
+      { name: 'Lounge Chairs', slug: 'lounge-chairs' },
       { name: 'Armchairs', slug: 'armchairs' },
-      { name: 'Wingback', slug: 'wingback-chairs' },
-      { name: 'Swing', slug: 'swing-chairs' },
-      { name: 'Rocking', slug: 'rocking-chairs' },
-      { name: 'Office', slug: 'office-chairs' },
-      { name: 'Study', slug: 'study-chairs' },
-      { name: 'Gaming', slug: 'gaming-chairs' },
-      { name: 'Executive & Director', slug: 'executive-director-chairs' },
-      { name: 'Cafeteria & Visitor', slug: 'cafeteria-visitor-chairs' },
+      { name: 'Wingback Chairs', slug: 'wingback-chairs' },
+      { name: 'Swing Chairs', slug: 'swing-chairs' },
+      { name: 'Rocking Chairs', slug: 'rocking-chairs' },
+      { name: 'Office Chairs', slug: 'office-chairs' },
+      { name: 'Study Chairs', slug: 'study-chairs' },
+      { name: 'Gaming Chairs', slug: 'gaming-chairs' },
+      { name: 'Executive & Director Chairs', slug: 'executive-director-chairs' },
+      { name: 'Cafeteria & Visitor Chairs', slug: 'cafeteria-visitor-chairs' },
       { name: 'Special Collection Chairs', slug: 'special-collection-chairs' },
       { name: 'Make your own Chairs', slug: 'make-your-own-chairs' },
     ],
@@ -113,8 +122,8 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: 'Benches', slug: 'benches' },
       { name: 'Loveseats', slug: 'loveseats' },
       { name: 'Ottomans & Pouffes', slug: 'ottomans-pouffes' },
-      { name: 'Special Collection', slug: 'special-collection-seating' },
-      { name: 'Make your own', slug: 'make-your-own-seating' },
+      { name: 'Special Collection Seatings', slug: 'special-collection-seating' },
+      { name: 'Make your own Seatings', slug: 'make-your-own-seating' },
     ],
   },
   {
@@ -122,11 +131,11 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'sofa-chairs',
     attributes: ['COLOUR', 'FABRIC', 'SEATER', 'ARM_STYLE'],
     children: [
-      { name: 'All', slug: 'all-sofa-chairs' },
-      { name: 'Single-Seater', slug: 'single-seater-sofa-chairs' },
-      { name: 'Dual-Seater', slug: 'dual-seater-sofa-chairs' },
-      { name: 'Special Collection', slug: 'special-collection-sofa-chairs' },
-      { name: 'Make your own', slug: 'make-your-own-sofa-chairs' },
+      { name: 'All Sofa Chairs', slug: 'all-sofa-chairs' },
+      { name: 'Single-Seater Sofa Chairs', slug: 'single-seater-sofa-chairs' },
+      { name: 'Dual-Seater Sofa Chairs', slug: 'dual-seater-sofa-chairs' },
+      { name: 'Special Collection Sofa Chairs', slug: 'special-collection-sofa-chairs' },
+      { name: 'Make your own Sofa Chairs', slug: 'make-your-own-sofa-chairs' },
     ],
   },
   {
@@ -142,8 +151,8 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: 'Side Tables', slug: 'side-tables' },
       { name: 'Nesting Tables', slug: 'nesting-tables' },
       { name: 'Sofa Side Tables', slug: 'sofa-side-tables' },
-      { name: 'Special Collection', slug: 'special-collection-tables' },
-      { name: 'Make your own', slug: 'make-your-own-tables' },
+      { name: 'Special Collection Tables', slug: 'special-collection-tables' },
+      { name: 'Make your own Tables', slug: 'make-your-own-tables' },
     ],
   },
   {
@@ -151,11 +160,11 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'recliners',
     attributes: ['COLOUR', 'FABRIC', 'SEATER', 'WARRANTY'],
     children: [
-      { name: 'All', slug: 'all-recliners' },
-      { name: 'Single-Seater', slug: 'single-seater-recliners' },
-      { name: 'Dual-Seater', slug: 'dual-seater-recliners' },
-      { name: 'Triple-Seater', slug: 'triple-seater-recliners' },
-      { name: 'Special Collection', slug: 'special-collection-recliners' },
+      { name: 'All Recliners', slug: 'all-recliners' },
+      { name: 'Single-Seater Recliners', slug: 'single-seater-recliners' },
+      { name: 'Dual-Seater Recliners', slug: 'dual-seater-recliners' },
+      { name: 'Triple-Seater Recliners', slug: 'triple-seater-recliners' },
+      { name: 'Special Collection Recliners', slug: 'special-collection-recliners' },
     ],
   },
   {
@@ -174,8 +183,8 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: '3-Seater Dining Sets', slug: '3-seater-dining-sets' },
       { name: '2-Seater Dining Sets', slug: '2-seater-dining-sets' },
       { name: '1-Seater Dining Sets', slug: '1-seater-dining-sets' },
-      { name: 'Special Collection', slug: 'special-collection-dining' },
-      { name: 'Make your own', slug: 'make-your-own-dining' },
+      { name: 'Special Collection Dining Sets', slug: 'special-collection-dining' },
+      { name: 'Make your own Dining Sets', slug: 'make-your-own-dining' },
     ],
   },
   {
@@ -187,8 +196,8 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: 'Balcony Chairs', slug: 'balcony-chairs' },
       { name: 'Balcony Tables', slug: 'balcony-tables' },
       { name: 'Swings', slug: 'balcony-swings' },
-      { name: 'Special Collection', slug: 'special-collection-balcony' },
-      { name: 'Make your own', slug: 'make-your-own-balcony' },
+      { name: 'Special Collection Balcony Furniture', slug: 'special-collection-balcony' },
+      { name: 'Make your own Balcony Furniture', slug: 'make-your-own-balcony' },
     ],
   },
   {
@@ -200,8 +209,8 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: 'Table & Chair Sets', slug: 'outdoor-table-chair-sets' },
       { name: 'Sofa Sets', slug: 'outdoor-sofa-sets' },
       { name: 'Loungers', slug: 'outdoor-loungers' },
-      { name: 'Special Collection', slug: 'special-collection-outdoor' },
-      { name: 'Make your own', slug: 'make-your-own-outdoor' },
+      { name: 'Special Collection Outdoor Furniture', slug: 'special-collection-outdoor' },
+      { name: 'Make your own Outdoor Furniture', slug: 'make-your-own-outdoor' },
     ],
   },
   {
@@ -209,14 +218,75 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'mattresses',
     attributes: ['MATTRESS_SIZE', 'FILLING', 'CUSHION_FIRMNESS', 'WARRANTY'],
     children: [
-      { name: 'All', slug: 'all-mattresses' },
-      { name: 'King', slug: 'king-mattresses', attributes: ['MATTRESS_SIZE'] },
-      { name: 'Queen', slug: 'queen-mattresses' },
-      { name: 'Double Bed', slug: 'double-bed-mattresses' },
-      { name: 'Ortho-Zen', slug: 'ortho-zen-mattresses' },
-      { name: 'Foam', slug: 'foam-mattresses' },
-      { name: 'Special Collection', slug: 'special-collection-mattresses' },
-      { name: 'Make your own', slug: 'make-your-own-mattresses' },
+      { name: 'All Mattresses', slug: 'all-mattresses' },
+      { name: 'King Size Mattresses', slug: 'king-mattresses', attributes: ['MATTRESS_SIZE'] },
+      { name: 'Queen Size Mattresses', slug: 'queen-mattresses' },
+      { name: 'Double Bed Mattresses', slug: 'double-bed-mattresses' },
+      { name: 'Ortho-Zen Mattresses', slug: 'ortho-zen-mattresses' },
+      { name: 'Foam Mattresses', slug: 'foam-mattresses' },
+      { name: 'Special Collection Mattresses', slug: 'special-collection-mattresses' },
+      { name: 'Make your own Mattresses', slug: 'make-your-own-mattresses' },
+    ],
+  },
+  {
+    name: 'Bedroom Headboard',
+    slug: 'bedroom-headboard',
+    shortDescription: 'Upholstered and solid-wood headboards, framed and padded in-house.',
+    attributes: ['COLOUR', 'FABRIC', 'WOOD_TYPE', 'MATTRESS_SIZE'],
+    children: [
+      { name: 'All Bedroom Headboard', slug: 'all-bedroom-headboard' },
+      { name: 'Bedroom Headboard', slug: 'bedroom-headboards' },
+      { name: 'Bedroom Legboard', slug: 'bedroom-legboards' },
+      { name: 'Headboard Cushion', slug: 'headboard-cushions' },
+      { name: 'Special Collection Bedroom HeadBoard', slug: 'special-collection-headboards' },
+      { name: 'Make your own Bedroom Headboard', slug: 'make-your-own-headboards' },
+    ],
+  },
+  {
+    name: 'Furniture Pillows',
+    slug: 'furniture-pillows',
+    shortDescription: 'Cushions and pillows cut, filled and stitched to match our furniture.',
+    attributes: ['COLOUR', 'FABRIC', 'FILLING', 'PILLOW_SHAPE', 'PACK_SIZE'],
+    children: [
+      { name: 'All Pillows', slug: 'all-pillows' },
+      { name: 'Set of 6 Pillows', slug: 'set-of-6-pillows' },
+      { name: 'Set of 5 Pillows', slug: 'set-of-5-pillows' },
+      { name: 'Set of 4 Pillows', slug: 'set-of-4-pillows' },
+      { name: 'Set of 3 Pillows', slug: 'set-of-3-pillows' },
+      { name: 'Set of 2 Pillows', slug: 'set-of-2-pillows' },
+      { name: 'Cylinder Pillows', slug: 'cylinder-pillows' },
+      { name: 'Spherical Pillows', slug: 'spherical-pillows' },
+      { name: 'Body Pillows', slug: 'body-pillows' },
+      { name: 'Big Floor Pillows', slug: 'big-floor-pillows' },
+      { name: 'Rectangular Pillows', slug: 'rectangular-pillows' },
+      { name: 'Square Pillows', slug: 'square-pillows' },
+      { name: 'Triangle Pillows', slug: 'triangle-pillows' },
+      { name: 'Knot Ball Pillows', slug: 'knot-ball-pillows' },
+      { name: 'Leather Pillows', slug: 'leather-pillows' },
+      { name: 'Chair/Floor Pillows', slug: 'chair-floor-pillows' },
+      { name: 'Special Collection Pillows', slug: 'special-collection-pillows' },
+      { name: 'Make your own Pillows', slug: 'make-your-own-pillows' },
+    ],
+  },
+  {
+    name: 'Furniture Accessories',
+    slug: 'furniture-accessories',
+    shortDescription: 'Legs, fittings and foam from the same workshop that builds our furniture.',
+    attributes: ['COMPATIBLE_WITH', 'MATERIAL', 'SIZE', 'COLOUR'],
+    children: [
+      { name: 'All Accessories', slug: 'all-accessories' },
+      { name: 'Sofa Legs', slug: 'sofa-legs' },
+      { name: 'Sofa Diamonds', slug: 'sofa-diamonds' },
+      { name: 'Screws / Nails', slug: 'screws-nails' },
+      { name: 'Table Legs', slug: 'table-legs' },
+      { name: 'Chair Legs', slug: 'chair-legs' },
+      { name: 'Swing Cable / Rope', slug: 'swing-cables-ropes' },
+      { name: 'Hooks', slug: 'furniture-hooks' },
+      { name: 'Sofa Sponge Cushion', slug: 'sofa-sponge-cushions' },
+      { name: 'Foam', slug: 'accessory-foam' },
+      // The accessories' curated line: a special collection by kind, whatever its name.
+      { name: 'Exclusive Accessories', slug: 'exclusive-accessories', kind: 'SPECIAL_COLLECTION' },
+      { name: 'Make your own Accessories', slug: 'make-your-own-accessories' },
     ],
   },
   {
@@ -231,8 +301,27 @@ export const CATEGORY_TREE: SeedCategory[] = [
       { name: 'Hall', slug: 'interior-hall' },
       { name: 'Lobby', slug: 'interior-lobby' },
       { name: 'Office', slug: 'interior-office' },
-      { name: 'Special Collection', slug: 'special-collection-interiors' },
-      { name: 'Make your own', slug: 'make-your-own-interiors' },
+      { name: 'Special Collection Interior', slug: 'special-collection-interiors' },
+      { name: 'Make your own Interior', slug: 'make-your-own-interiors' },
+    ],
+  },
+  {
+    // A service line, not a shelf: discovered here, requested through the contract-work form.
+    name: 'Contract Based Work',
+    slug: 'contract-based-work',
+    kind: 'SERVICE',
+    leadFormKey: 'contract-work',
+    shortDescription: 'Furniture designed and built to order for homes, hotels, offices and banks.',
+    children: [
+      service('Custom Furnitures', 'custom-furniture'),
+      service('Custom Hotel Furnitures', 'custom-hotel-furniture'),
+      service('Custom Cafe Furniture', 'custom-cafe-furniture'),
+      service('Custom Restaurant Furniture', 'custom-restaurant-furniture'),
+      service('Custom Lobby Furniture', 'custom-lobby-furniture'),
+      service('Custom Office Furniture', 'custom-office-furniture'),
+      service('Custom Home Furniture', 'custom-home-furniture'),
+      service('Customized Interior Designer Furniture', 'interior-designer-furniture'),
+      service('Customized Bank Furnitures', 'custom-bank-furniture'),
     ],
   },
   {

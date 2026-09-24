@@ -4,9 +4,11 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { prisma } from '../src/config/prisma';
 import { cache } from '../src/container';
+import { passwordService } from '../src/modules/auth/password.service';
 import { CATALOG_CACHE_PREFIXES } from '../src/modules/catalog-admin/catalogCache.service';
 import { pageRendererService } from '../src/modules/cms/pageRenderer.service';
 import { pricingFacade } from '../src/modules/pricing/pricing.facade';
+import { shippingService } from '../src/modules/pricing/shipping.service';
 import { QUERY_BUDGETS, type QueryBudgetName } from '../src/perf/queryBudgets';
 
 import { Shopper } from './helpers/paidOrder';
@@ -83,9 +85,10 @@ async function profile(run: () => Promise<unknown>): Promise<Profile> {
   let writes = 0;
 
   for (const sql of statements) {
-    // Schema-agnostic on purpose: it is `main` on SQLite and the database name on MySQL.
-    const table = /FROM `[^`]+`\.`(\w+)`/.exec(sql)?.[1];
-    if (table && /^SELECT/i.test(sql)) {
+    // Schema-agnostic on purpose: Prisma qualifies tables with the database name, the listing's
+    // parameterised raw SQL (listing.repository) does not.
+    const table = /FROM\s+`?(?:[^`\s]+`\.`)?(\w+)`?/.exec(sql)?.[1];
+    if (table && /^\s*(SELECT|WITH)/i.test(sql)) {
       tally.set(table, (tally.get(table) ?? 0) + 1);
       continue;
     }
@@ -270,6 +273,8 @@ describe('query budgets', () => {
       return run;
     };
 
+    // The delivery zone is configuration: warm in steady state, like the settings in beforeAll.
+    await shippingService.serviceability(address.pincode);
     const oneLine = await init(1, 'budget.one@example.com');
     const fiveLines = await init(5, 'budget.five@example.com');
 
@@ -310,9 +315,28 @@ describe('query budgets', () => {
   }, 120_000);
 
   it('admin order detail stays within budget', async () => {
-    const login = await request(app)
-      .post(`${API}/admin/auth/login`)
-      .send({ email: 'admin@clearwood.local', password: 'ChangeMe@12345' });
+    // The seeded bootstrap ADMIN must change its password before it may read anything, so the
+    // budget is measured for an admin who is past that step.
+    const email = 'budget.super@clearwood.local';
+    const password = 'Rosewood-Teak-2026';
+    const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SUPER_ADMIN' } });
+    const admin = await prisma.adminUser.upsert({
+      where: { email },
+      update: {},
+      create: {
+        email,
+        name: 'Budget Super',
+        passwordHash: await passwordService.hash(password),
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.adminUserRole.upsert({
+      where: { adminUserId_roleId: { adminUserId: admin.id, roleId: role.id } },
+      update: {},
+      create: { adminUserId: admin.id, roleId: role.id },
+    });
+
+    const login = await request(app).post(`${API}/admin/auth/login`).send({ email, password });
 
     const jar = (login.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
     const cookie = jar.map((entry) => entry.split(';')[0]).join('; ');
@@ -329,5 +353,115 @@ describe('query budgets', () => {
 
     expect(status).toBe(200);
     expectWithin('ADMIN_ORDER_DETAIL', queries);
+  }, 60_000);
+});
+
+/* ------------------------------------------------------- Prompt 3: catalog reads */
+
+describe('catalog read baseline', () => {
+  let cookie = '';
+  let productId = '';
+
+  beforeAll(async () => {
+    const email = 'budget.catalog@clearwood.local';
+    const password = 'Rosewood-Teak-2026';
+    const role = await prisma.role.findUniqueOrThrow({ where: { code: 'CATALOG_MANAGER' } });
+    const admin = await prisma.adminUser.upsert({
+      where: { email },
+      update: {},
+      create: {
+        email,
+        name: 'Budget Catalog',
+        passwordHash: await passwordService.hash(password),
+        status: 'ACTIVE',
+      },
+    });
+    await prisma.adminUserRole.upsert({
+      where: { adminUserId_roleId: { adminUserId: admin.id, roleId: role.id } },
+      update: {},
+      create: { adminUserId: admin.id, roleId: role.id },
+    });
+    const login = await request(app).post(`${API}/admin/auth/login`).send({ email, password });
+    const jar = (login.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+    cookie = jar.map((entry) => entry.split(';')[0]).join('; ');
+
+    // The product with the most variants, so per-variant work would show.
+    const [widest] = await prisma.productVariant.groupBy({
+      by: ['productId'],
+      where: { deletedAt: null },
+      _count: { _all: true },
+      orderBy: [{ _count: { productId: 'desc' } }, { productId: 'asc' }],
+      take: 1,
+    });
+    productId = widest!.productId;
+
+    await request(app).get(`${API}/catalog/categories/tree`);
+    await request(app).get(`${API}/catalog/filters?categorySlug=${categorySlug}`);
+    await request(app).get(`${API}/admin/catalog/products?limit=5`).set('Cookie', cookie);
+  }, 120_000);
+
+  const get =
+    (url: string, admin = false) =>
+    async () => {
+      const response = admin
+        ? await request(app).get(url).set('Cookie', cookie)
+        : await request(app).get(url);
+      expect(response.status, url).toBe(200);
+    };
+
+  it('category tree', async () => {
+    await cache.delByPrefix(CATALOG_CACHE_PREFIXES.categoryTree);
+    const run = await profile(get(`${API}/catalog/categories/tree`));
+    console.log(`[baseline] CATEGORY_TREE ${run.queries} ${run.reads}`);
+    expectWithin('CATEGORY_TREE', run.queries);
+  }, 60_000);
+
+  it('category listing does not grow with the page size', async () => {
+    const small = await profile(
+      get(`${API}/catalog/products?categorySlug=${categorySlug}&limit=2`),
+    );
+    const large = await profile(
+      get(`${API}/catalog/products?categorySlug=${categorySlug}&limit=24`),
+    );
+    console.log(`[baseline] CATEGORY_LISTING ${large.queries} ${large.reads}`);
+    expectWithin('CATEGORY_LISTING', Math.max(small.queries, large.queries));
+    expectSameShape('a category listing of 2 against 24 products', small, large, 22);
+  }, 120_000);
+
+  it('filters', async () => {
+    const run = await profile(get(`${API}/catalog/filters?categorySlug=${categorySlug}`));
+    console.log(`[baseline] FILTERS ${run.queries} ${run.reads}`);
+    expectWithin('FILTERS', run.queries);
+  }, 60_000);
+
+  it('product options and gallery', async () => {
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    const options = await profile(get(`${API}/catalog/products/${product.slug}/options`));
+    const gallery = await profile(get(`${API}/catalog/products/${product.slug}/gallery`));
+    console.log(`[baseline] PRODUCT_OPTIONS ${options.queries} ${options.reads}`);
+    console.log(`[baseline] PRODUCT_GALLERY ${gallery.queries} ${gallery.reads}`);
+    expectWithin('PRODUCT_OPTIONS', options.queries);
+    expectWithin('PRODUCT_GALLERY', gallery.queries);
+  }, 60_000);
+
+  it('slug resolution', async () => {
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    const run = await profile(get(`${API}/catalog/resolve?path=/${product.slug}`));
+    console.log(`[baseline] RESOLVE ${run.queries} ${run.reads}`);
+    expectWithin('RESOLVE', run.queries);
+  }, 60_000);
+
+  it('admin product list does not grow with the page size', async () => {
+    const small = await profile(get(`${API}/admin/catalog/products?limit=2`, true));
+    const large = await profile(get(`${API}/admin/catalog/products?limit=50`, true));
+    console.log(`[baseline] ADMIN_PRODUCT_LIST ${large.queries} ${large.reads}`);
+    expectWithin('ADMIN_PRODUCT_LIST', Math.max(small.queries, large.queries));
+    expectSameShape('an admin product list of 2 against 50', small, large, 48);
+  }, 60_000);
+
+  it('admin variant list', async () => {
+    const run = await profile(get(`${API}/admin/catalog/products/${productId}/variants`, true));
+    console.log(`[baseline] ADMIN_VARIANTS ${run.queries} ${run.reads}`);
+    expectWithin('ADMIN_VARIANTS', run.queries);
   }, 60_000);
 });

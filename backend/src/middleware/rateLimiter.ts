@@ -3,12 +3,15 @@ import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
 import { env, isTest } from '../config/env';
 import { AppError } from '../utils/AppError';
 
+import { rateLimitStore } from './rateLimitStore';
+
 /** R10 — a blunt but effective guard in front of /api. Tightened per-route from Prompt 3. */
 export const apiRateLimiter: RateLimitRequestHandler = rateLimit({
   windowMs: env.RATE_LIMIT_WINDOW_MS,
   limit: env.RATE_LIMIT_MAX,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  store: rateLimitStore('api'),
   skip: () => isTest,
   handler: (_req, _res, next) => {
     next(

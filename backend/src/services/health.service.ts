@@ -16,7 +16,7 @@ export interface DependencyStatus {
 }
 
 export interface ReadinessReport {
-  status: 'ready' | 'degraded';
+  status: 'ready' | 'degraded' | 'unavailable';
   timestamp: string;
   dependencies: {
     database: DependencyStatus;
@@ -50,7 +50,10 @@ export const healthService = {
     };
   },
 
-  /** Readiness: the process is only useful if the database and the cache both answer. */
+  /**
+   * Readiness: the database is required; the cache is not. Without the cache every read falls back
+   * to MySQL, so the process still serves (`degraded`) and must stay in rotation.
+   */
   async getReadiness(): Promise<ReadinessReport> {
     const [database, cacheStatus] = await Promise.all([
       probe(activeDrivers.db, pingDatabase),
@@ -60,10 +63,15 @@ export const healthService = {
       }),
     ]);
 
-    const ready = database.status === 'up' && cacheStatus.status === 'up';
+    const status =
+      database.status === 'down'
+        ? 'unavailable'
+        : cacheStatus.status === 'down'
+          ? 'degraded'
+          : 'ready';
 
     return {
-      status: ready ? 'ready' : 'degraded',
+      status,
       timestamp: new Date().toISOString(),
       dependencies: { database, cache: cacheStatus },
     };

@@ -11,7 +11,11 @@ import type {
 
 import { env } from '../../config/env';
 import { search } from '../../container';
-import { searchDocumentRepository } from '../../repositories/searchDocument.repository';
+import {
+  listingRepository,
+  type ListingFilter,
+  type ListingOrder,
+} from '../../repositories/listing.repository';
 import {
   storefrontRepository,
   type ProductCardRow,
@@ -21,21 +25,25 @@ import { pricingContextLoader } from '../pricing/pricingContext.loader';
 import { pricingFacade } from '../pricing/pricing.facade';
 
 import { toProductCard } from './card.mapper';
+import { listingIndexService } from './listingIndex.service';
 import {
-  buildWhere,
+  buildListingFilter,
   groupValueIdsByAttribute,
   resolveScope,
   type ResolvedScope,
 } from './listing.filters';
+import { merchandisingAt, type MerchandisingContext } from './merchandising';
 import { settingsService } from './storefrontSettings.service';
 
 /**
  * The listing engine.
  *
- * PRICE POLICY — filtering and sorting always run against `SearchDocument.minPricePaise`, which is
- * the DEFAULT customer group's price resolved by the Prompt 6 engine. The price each card DISPLAYS
- * is resolved for the caller's own group in a single batched quote. The response says which basis
- * was used so the two can never be confused.
+ * MySQL filters, sorts, counts and paginates (listing.repository); Node shapes one page of cards.
+ *
+ * PRICE POLICY - filtering and sorting run against the catalog listing index, the DEFAULT customer
+ * group's price resolved by the Prompt 6 engine (listingIndex.service). The price each card
+ * DISPLAYS is resolved for the caller's own group in a single batched quote. The response says
+ * which basis was used so the two can never be confused.
  */
 
 export interface ListingIdentity {
@@ -45,22 +53,6 @@ export interface ListingIdentity {
 export interface PriceIndexEntry {
   minPricePaise: number | null;
   maxPricePaise: number | null;
-}
-
-interface Candidate {
-  id: string;
-  name: string;
-  position: number;
-  publishedAt: Date | null;
-  createdAt: Date;
-  soldCount: number;
-  ratingAvgBp: number;
-  ratingCount: number;
-  basePricePaise: number;
-  compareAtPricePaise: number | null;
-  isMadeToOrder: boolean;
-  stat: { popularityScore: number } | null;
-  categories: { categoryId: string; position: number }[];
 }
 
 const SORT_LABELS: Record<ProductSort, string> = {
@@ -120,90 +112,73 @@ function fingerprint(query: StorefrontListQuery, sort: ProductSort): string {
     .slice(0, 16);
 }
 
-function defaultSort(query: StorefrontListQuery): ProductSort {
+function defaultSort(query: StorefrontListQuery, scope: ResolvedScope): ProductSort {
   if (query.sort) return query.sort;
   if (query.q) return 'RELEVANCE';
   if (query.collectionSlug) return 'CURATED';
+  if (scope.categoryRule?.kind === 'NEW_ARRIVALS') return 'NEWEST';
   return 'POPULARITY';
 }
 
-function compare(
-  sort: ProductSort,
-  prices: Map<string, PriceIndexEntry>,
-  relevance: Map<string, number>,
-  scope: ResolvedScope,
-  curatedOrder: Map<string, number>,
-) {
-  const priceOf = (id: string): number => prices.get(id)?.minPricePaise ?? Number.MAX_SAFE_INTEGER;
-
-  return (a: Candidate, b: Candidate): number => {
-    switch (sort) {
-      case 'RELEVANCE':
-        return (relevance.get(b.id) ?? 0) - (relevance.get(a.id) ?? 0) || a.id.localeCompare(b.id);
-      case 'PRICE_ASC':
-        return priceOf(a.id) - priceOf(b.id) || a.id.localeCompare(b.id);
-      case 'PRICE_DESC':
-        return priceOf(b.id) - priceOf(a.id) || a.id.localeCompare(b.id);
-      case 'NEWEST':
-        return (
-          (b.publishedAt?.getTime() ?? b.createdAt.getTime()) -
-            (a.publishedAt?.getTime() ?? a.createdAt.getTime()) || a.id.localeCompare(b.id)
-        );
-      case 'BEST_SELLING':
-        return b.soldCount - a.soldCount || a.id.localeCompare(b.id);
-      case 'RATING':
-        return (
-          b.ratingAvgBp - a.ratingAvgBp || b.ratingCount - a.ratingCount || a.id.localeCompare(b.id)
-        );
-      case 'NAME_ASC':
-        return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
-      case 'CURATED': {
-        const rank = (candidate: Candidate): number => {
-          const curated = curatedOrder.get(candidate.id);
-          if (curated !== undefined) return curated;
-          if (scope.categoryId) {
-            const link = candidate.categories.find(
-              (entry) => entry.categoryId === scope.categoryId,
-            );
-            if (link) return link.position;
-          }
-          return candidate.position;
-        };
-        return rank(a) - rank(b) || a.id.localeCompare(b.id);
-      }
-      case 'POPULARITY':
-      default:
-        return (
-          (b.stat?.popularityScore ?? b.soldCount) - (a.stat?.popularityScore ?? a.soldCount) ||
-          a.id.localeCompare(b.id)
-        );
-    }
-  };
+/** Everything a page and its facets need, resolved once per request before any SQL runs. */
+export interface PreparedListing {
+  query: StorefrontListQuery;
+  sort: ProductSort;
+  limit: number;
+  offset: number;
+  fingerprint: string;
+  scope: ResolvedScope;
+  valueIdsByAttribute: Map<string, string[]>;
+  filter: ListingFilter;
+  order: ListingOrder;
+  relevance: Map<string, number>;
+  /** The moment and settings every card of this page is judged by. */
+  merchandising: MerchandisingContext;
+  /** A search query that matched nothing: no SQL needs to run. */
+  noMatches: boolean;
 }
 
-export interface ListingOutcome {
+export interface ListingPage {
   listing: ProductListDto;
   page: number;
   limit: number;
   total: number;
-  /** The fully filtered id set, reused by the facet service so it never re-queries. */
-  candidateIds: string[];
-  scope: ResolvedScope;
-  valueIdsByAttribute: Map<string, string[]>;
-  prices: Map<string, PriceIndexEntry>;
 }
 
-export const productQueryService = {
-  async pricingBasis(customerId: string | null): Promise<PricingBasis> {
-    if (!customerId) return 'DEFAULT_GROUP';
+/**
+ * Whose prices a catalog response shows. `key` is shared by every shopper priced identically - an
+ * anonymous visitor and a signed-in customer of the default group who has not ordered yet get the
+ * same unit prices, so they may share one cached grid; any other group, or a returning customer
+ * (rules may be conditioned on `isFirstOrder`), gets its own.
+ */
+export interface PricingAudience {
+  key: string;
+  basis: PricingBasis;
+}
 
-    const group = await pricingContextLoader.resolveCustomerGroup(customerId, null);
-    return group && group.discountBp ? `CUSTOMER_GROUP:${group.code}` : 'DEFAULT_GROUP';
+const ANONYMOUS: PricingAudience = { key: 'anon', basis: 'DEFAULT_GROUP' };
+
+export const productQueryService = {
+  async pricingAudience(customerId: string | null): Promise<PricingAudience> {
+    if (!customerId) return ANONYMOUS;
+
+    const { group, isFirstOrder } = await pricingContextLoader.catalogAudience(customerId);
+    const isDefault = !group || group.isDefault === true;
+    if (isDefault && isFirstOrder) return ANONYMOUS;
+
+    return {
+      key: `g${group?.id ?? '-'}:${isFirstOrder ? 'first' : 'returning'}`,
+      basis: isDefault ? 'DEFAULT_GROUP' : `CUSTOMER_GROUP:${group!.code}`,
+    };
+  },
+
+  async pricingBasis(customerId: string | null): Promise<PricingBasis> {
+    return (await this.pricingAudience(customerId)).basis;
   },
 
   /**
-   * Resolves the display price for a page of cards in ONE quote. The Prompt 6 engine already
-   * accepts a multi-line cart, so a 24-card grid costs a single pricing context, not 24.
+   * The display price of every card: its default variant, one unit, for the caller - each priced
+   * as if bought on its own (`quoteEach`), from one pricing context per chunk of cards.
    */
   async resolveDisplayPrices(
     rows: ProductCardRow[],
@@ -222,13 +197,13 @@ export const productQueryService = {
 
     for (let index = 0; index < items.length; index += chunkSize) {
       const chunk = items.slice(index, index + chunkSize);
-      const breakdown = await pricingFacade.quoteCart({
+      const lines = await pricingFacade.quoteEach({
         items: chunk,
         channel: 'WEB',
         customerId: identity.customerId,
       });
 
-      breakdown.lines.forEach((line, position) => {
+      lines.forEach((line, position) => {
         const row = chunk[position];
         if (row) resolved.set(row.productId, line.unitPricePaise);
       });
@@ -237,22 +212,25 @@ export const productQueryService = {
     return resolved;
   },
 
-  async list(query: StorefrontListQuery, identity: ListingIdentity): Promise<ListingOutcome> {
+  /** Resolves scope, search hits, filter, order and offset: the inputs of a page and its facets. */
+  async prepare(query: StorefrontListQuery): Promise<PreparedListing> {
     const settings = await settingsService.read();
     const limit = Math.min(query.limit, settings.maxPageSize);
-    const sort = defaultSort(query);
+    const merchandising = merchandisingAt(settings);
+
+    const scope = await resolveScope(query);
+    const sort = defaultSort(query, scope);
 
     if (sort === 'RELEVANCE' && !query.q) {
       throw AppError.validation('RELEVANCE sorting needs a search query', { field: 'sort' });
     }
 
-    const scope = await resolveScope(query);
     const valueIdsByAttribute = await groupValueIdsByAttribute(
       query.attributeValueIds,
       storefrontRepository.findAttributeValueOwners,
     );
 
-    /* A search query narrows the id set before any SQL filter runs. */
+    /* A search query narrows the id set to its (bounded) hit list before any SQL filter runs. */
     const relevance = new Map<string, number>();
     let searchIds: string[] | undefined;
 
@@ -264,48 +242,13 @@ export const productQueryService = {
       });
       searchIds = result.hits.map((hit) => hit.entityId);
       for (const hit of result.hits) relevance.set(hit.entityId, hit.score);
-
-      if (searchIds.length === 0) {
-        return this.empty(query, sort, limit, scope, valueIdsByAttribute);
-      }
     }
 
-    const where = buildWhere(query, {
-      scope,
-      valueIdsByAttribute,
-      ...(searchIds ? { candidateIds: searchIds } : {}),
-    });
-
-    const candidates = (await storefrontRepository.findCandidates(where)) as Candidate[];
-    const prices = await this.priceIndex(candidates.map((candidate) => candidate.id));
-
-    const filtered = candidates.filter((candidate) => {
-      const entry = prices.get(candidate.id);
-      const price = entry?.minPricePaise ?? candidate.basePricePaise;
-
-      if (query.priceMin !== undefined && price < query.priceMin) return false;
-      if (query.priceMax !== undefined && price > query.priceMax) return false;
-
-      if (query.onSale) {
-        const hasCompareAt =
-          candidate.compareAtPricePaise !== null &&
-          candidate.compareAtPricePaise > candidate.basePricePaise;
-        const discounted = price < candidate.basePricePaise;
-        if (!hasCompareAt && !discounted) return false;
-      }
-
-      if (!settings.showOutOfStock && !query.inStockOnly) return true;
-      return true;
-    });
-
-    const curatedOrder = new Map(scope.collectionOrder.map((id, index) => [id, index]));
-    filtered.sort(compare(sort, prices, relevance, scope, curatedOrder));
-
-    const orderedIds = filtered.map((candidate) => candidate.id);
+    const noMatches = searchIds !== undefined && searchIds.length === 0;
     const mark = fingerprint(query, sort);
 
     let offset = (query.page - 1) * limit;
-    if (query.cursor) {
+    if (query.cursor && !noMatches) {
       const decoded = decodeCursor(query.cursor);
       if (decoded.fingerprint !== mark) {
         throw AppError.validation('That cursor belongs to a different filter set', {
@@ -315,25 +258,76 @@ export const productQueryService = {
       offset = decoded.offset;
     }
 
-    const pageIds = orderedIds.slice(offset, offset + limit);
-    const rows = await storefrontRepository.findCards(pageIds);
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    const ordered = pageIds
-      .map((id) => byId.get(id))
-      .filter((row): row is ProductCardRow => row !== undefined);
+    // Highest score first; equal scores in id order, exactly as before the sort moved to SQL.
+    const rankedIds = [...relevance]
+      .sort(([a, scoreA], [b, scoreB]) => scoreB - scoreA || a.localeCompare(b))
+      .map(([id]) => id);
 
-    const [displayPrices, basis, priceBounds] = await Promise.all([
+    return {
+      query,
+      sort,
+      limit,
+      offset,
+      fingerprint: mark,
+      scope,
+      valueIdsByAttribute,
+      filter: buildListingFilter(query, {
+        scope,
+        valueIdsByAttribute,
+        ...(searchIds ? { searchIds } : {}),
+        hideOutOfStock: !settings.showOutOfStock,
+        now: merchandising.now,
+        newArrivalSince: merchandising.newArrivalSince,
+      }),
+      order: {
+        sort,
+        collectionId: scope.collectionId,
+        categoryId: scope.categoryId,
+        rankedIds,
+      },
+      relevance,
+      merchandising,
+      noMatches,
+    };
+  },
+
+  /** One page: ids, total and price bounds from MySQL, then cards and live prices for that page. */
+  async page(prepared: PreparedListing, identity: ListingIdentity): Promise<ListingPage> {
+    const { query, sort, limit, offset, scope, relevance } = prepared;
+    if (prepared.noMatches) return this.empty(query, sort, limit, scope);
+
+    const { rows, summary } = await listingRepository.page(
+      prepared.filter,
+      prepared.order,
+      offset,
+      limit,
+    );
+
+    const cards = await storefrontRepository.findCards(rows.map((row) => row.id));
+    const byId = new Map(cards.map((row) => [row.id, row]));
+    const ordered = rows
+      .map((row) => byId.get(row.id))
+      .filter((row): row is ProductCardRow => row !== undefined);
+    const indexed = new Map(rows.map((row) => [row.id, row]));
+
+    const [displayPrices, basis] = await Promise.all([
       this.resolveDisplayPrices(ordered, identity),
       this.pricingBasis(identity.customerId),
-      searchDocumentRepository.priceExtent(orderedIds),
     ]);
 
     const items = ordered.map((row) =>
-      toProductCard(row, {
-        pricePaise: displayPrices.get(row.id) ?? row.basePricePaise,
-        indexed: prices.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
-        ...(relevance.has(row.id) ? { relevanceScore: relevance.get(row.id)! } : {}),
-      }),
+      toProductCard(
+        row,
+        {
+          pricePaise: displayPrices.get(row.id) ?? row.basePricePaise,
+          indexed: {
+            minPricePaise: indexed.get(row.id)?.minPricePaise ?? null,
+            maxPricePaise: indexed.get(row.id)?.maxPricePaise ?? null,
+          },
+          ...(relevance.has(row.id) ? { relevanceScore: relevance.get(row.id)! } : {}),
+        },
+        prepared.merchandising,
+      ),
     );
 
     const nextOffset = offset + limit;
@@ -346,29 +340,28 @@ export const productQueryService = {
         availableSorts: sortOptions(Boolean(query.q)),
         sort,
         pricingBasis: basis,
-        priceBounds,
-        nextCursor: nextOffset < orderedIds.length ? encodeCursor(nextOffset, mark) : null,
+        priceBounds:
+          summary.total > 0
+            ? { minPaise: summary.minPricePaise, maxPaise: summary.maxPricePaise }
+            : { minPaise: 0, maxPaise: 0 },
+        nextCursor:
+          nextOffset < summary.total ? encodeCursor(nextOffset, prepared.fingerprint) : null,
         query: query.q ?? null,
-        totalCount: orderedIds.length,
+        totalCount: summary.total,
       },
       page: query.page,
       limit,
-      total: orderedIds.length,
-      candidateIds: orderedIds,
-      scope,
-      valueIdsByAttribute,
-      prices,
+      total: summary.total,
     };
   },
 
+  async list(query: StorefrontListQuery, identity: ListingIdentity): Promise<ListingPage> {
+    return this.page(await this.prepare(query), identity);
+  },
+
+  /** The listing index's default-group range for cards shown outside a listing page. */
   async priceIndex(productIds: string[]): Promise<Map<string, PriceIndexEntry>> {
-    const rows = await searchDocumentRepository.findPriceBounds(productIds);
-    return new Map(
-      rows.map((row) => [
-        row.entityId,
-        { minPricePaise: row.minPricePaise, maxPricePaise: row.maxPricePaise },
-      ]),
-    );
+    return listingIndexService.read(productIds);
   },
 
   async empty(
@@ -376,8 +369,7 @@ export const productQueryService = {
     sort: ProductSort,
     limit: number,
     scope: ResolvedScope,
-    valueIdsByAttribute: Map<string, string[]>,
-  ): Promise<ListingOutcome> {
+  ): Promise<ListingPage> {
     return {
       listing: {
         items: [],
@@ -394,10 +386,6 @@ export const productQueryService = {
       page: query.page,
       limit,
       total: 0,
-      candidateIds: [],
-      scope,
-      valueIdsByAttribute,
-      prices: new Map(),
     };
   },
 };

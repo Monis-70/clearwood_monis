@@ -74,6 +74,7 @@ export const pricingController = {
       ...(query.pincode ? { pincode: query.pincode } : {}),
       channel: query.channel,
       customerId: customerIdOf(req),
+      reachableOnly: true,
     });
 
     ok(res, breakdown);
@@ -89,6 +90,7 @@ export const pricingController = {
       channel: input.channel,
       ...(input.shippingMethod ? { shippingMethod: input.shippingMethod } : {}),
       customerId: customerIdOf(req),
+      reachableOnly: true,
     });
 
     ok(res, breakdown);
@@ -102,6 +104,7 @@ export const pricingController = {
       ...(input.pincode ? { pincode: input.pincode } : {}),
       channel: input.channel,
       customerId: customerIdOf(req),
+      reachableOnly: true,
     });
 
     ok(res, result);

@@ -37,6 +37,44 @@ async function resolvePermissionIds(codes: string[]): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
+/**
+ * No amplification applies to role DEFINITIONS too: `system.role.*` lets an admin shape roles at
+ * or below their own level - never edit one above it (SUPER_ADMIN included), and never make a
+ * role confer a permission they do not hold themselves, which would be a self-grant by proxy.
+ */
+async function assertRoleManageable(
+  req: Request,
+  role: RoleWithPermissions | null,
+  permissions: readonly string[] | undefined,
+): Promise<void> {
+  const actorId = req.auth?.principalId;
+  if (!actorId) throw new AppError(401, 'NOT_AUTHENTICATED', 'Authentication required');
+
+  const actor = await rbacService.privilegeOfUser(actorId);
+  if (actor.isSuperAdmin) return;
+
+  if (role && !rbacService.covers(actor, rbacService.privilegeOfRoles([role]))) {
+    throw rbacService.refuse(req, {
+      code: 'ROLE_NOT_MANAGEABLE',
+      message: 'You cannot change a role that carries permissions you do not hold',
+      entity: 'Role',
+      entityId: role.id,
+      details: { role: role.code },
+    });
+  }
+
+  const notHeld = (permissions ?? []).filter((code) => !actor.permissions.has(code));
+  if (notHeld.length > 0) {
+    throw rbacService.refuse(req, {
+      code: 'ROLE_NOT_MANAGEABLE',
+      message: 'You cannot give a role permissions you do not hold',
+      entity: 'Role',
+      entityId: role?.id ?? null,
+      details: { permissions: notHeld },
+    });
+  }
+}
+
 export const roleService = {
   async list(): Promise<RoleDto[]> {
     const roles = await roleRepository.findAll(true);
@@ -76,6 +114,8 @@ export const roleService = {
     }
 
     const permissionIds = await resolvePermissionIds(input.permissions);
+    await assertRoleManageable(req, null, input.permissions);
+
     const role = await roleRepository.create({
       code: input.code,
       name: input.name,
@@ -106,6 +146,8 @@ export const roleService = {
     if (role.isSystem && input.isActive === false) {
       throw AppError.forbidden('A system role cannot be deactivated');
     }
+
+    await assertRoleManageable(req, role, input.permissions);
 
     const before = role.permissions.map((grant) => grant.permission.code).sort();
 
@@ -147,6 +189,8 @@ export const roleService = {
     const role = await roleRepository.findById(id);
     if (!role) throw AppError.notFound('Role not found', { id });
     if (role.isSystem) throw AppError.forbidden('A system role cannot be deleted');
+
+    await assertRoleManageable(req, role, undefined);
 
     const holders = await roleRepository.adminUserIdsWithRole(id);
     if (holders.length > 0) {

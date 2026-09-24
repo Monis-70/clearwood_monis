@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import path from 'node:path';
 
 import dotenv from 'dotenv';
@@ -34,6 +35,36 @@ const csv = (value: string): string[] =>
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+const TRUST_PROXY_NAMES = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+/**
+ * `false`, or the proxies Express may believe about X-Forwarded-For. Anything that would trust an
+ * arbitrary network (`true`, `*`, a hop count, a `/0` range) throws: it lets a client pick its IP.
+ */
+export function parseTrustProxy(raw: string): false | string[] {
+  const value = raw.trim().toLowerCase();
+  if (value === '' || value === 'false') return false;
+
+  const entries = csv(value);
+  for (const entry of entries) {
+    if (TRUST_PROXY_NAMES.has(entry)) continue;
+
+    const [address = '', bits, extra] = entry.split('/');
+    const family = isIP(address);
+    const maxBits = family === 6 ? 128 : 32;
+    const validBits =
+      bits === undefined ||
+      (/^\d{1,3}$/.test(bits) && Number(bits) >= 1 && Number(bits) <= maxBits);
+
+    if (family === 0 || extra !== undefined || !validBits) {
+      throw new Error(
+        `"${entry}" is not allowed - use false, loopback, linklocal, uniquelocal, an IP or a CIDR`,
+      );
+    }
+  }
+  return entries;
+}
+
 const DEV_SECRETS = [
   'dev_access_secret_change_me',
   'dev_refresh_secret_change_me',
@@ -41,13 +72,36 @@ const DEV_SECRETS = [
   'dev_admin_refresh_secret_change_me',
 ];
 
-const DEV_ADMIN_PASSWORD = 'ChangeMe@12345';
+/**
+ * The development bootstrap credentials. Both are committed to this repository and therefore
+ * public: production refuses to boot on them, and `password.service` refuses the password as a
+ * chosen password and as a production sign-in.
+ */
+export const DEV_ADMIN_PASSWORD = 'ChangeMe@12345';
+const DEV_ADMIN_EMAIL = 'admin@clearwood.local';
 const MIN_PRODUCTION_SECRET_LENGTH = 32;
 
 const envSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     APP_NAME: z.string().min(1).default('ClearWood Furnitures'),
+    /**
+     * Bind address. Loopback by default: until a reverse proxy with TLS sits in front of the API,
+     * nothing outside this machine may reach it. Set `0.0.0.0` only deliberately.
+     */
+    HOST: z.string().trim().min(1).default('127.0.0.1'),
+    /** Which proxies may set X-Forwarded-For; rate limits and audit use the resulting `req.ip`. */
+    TRUST_PROXY: z
+      .string()
+      .default('false')
+      .transform((raw, ctx) => {
+        try {
+          return parseTrustProxy(raw);
+        } catch (error) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: (error as Error).message });
+          return z.NEVER;
+        }
+      }),
     API_PORT: z.coerce.number().int().min(1).max(65535).default(7180),
     API_PREFIX: z.string().startsWith('/').default('/api/v1'),
     WEB_ORIGIN: z.string().url().default('http://localhost:7181'),
@@ -62,8 +116,20 @@ const envSchema = z
     DATABASE_URL: z.string().min(1).default('mysql://clearwood:clearwood@127.0.0.1:3306/clearwood_db'),
 
     CACHE_DRIVER: z.enum(CACHE_DRIVERS).default('memory'),
-    REDIS_URL: z.string().min(1).optional(),
+    REDIS_URL: z
+      .string()
+      .regex(/^rediss?:\/\/\S+$/, 'must be a redis:// or rediss:// URL')
+      .optional(),
+    /** Every key starts with it, so one Redis can safely serve several apps or environments. */
+    REDIS_KEY_PREFIX: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9_-]{0,30}:$/, 'lowercase letters, digits, _ or -, ending in ":"')
+      .default('cw:'),
+    REDIS_CONNECT_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(2_000),
+    REDIS_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(50).max(10_000).default(500),
     CACHE_MAX_ITEMS: z.coerce.number().int().min(16).default(2000),
+    /** A larger value is simply not cached, by either driver. */
+    CACHE_MAX_VALUE_BYTES: z.coerce.number().int().min(1024).max(16_777_216).default(1_048_576),
 
     JWT_ACCESS_SECRET: z.string().min(8).default('dev_access_secret_change_me'),
     JWT_REFRESH_SECRET: z.string().min(8).default('dev_refresh_secret_change_me'),
@@ -99,7 +165,7 @@ const envSchema = z
     SMS_API_KEY: z.string().min(1).optional(),
     SMS_SENDER_ID: z.string().min(1).optional(),
 
-    ADMIN_SEED_EMAIL: z.string().email().default('admin@clearwood.local'),
+    ADMIN_SEED_EMAIL: z.string().email().default(DEV_ADMIN_EMAIL),
     ADMIN_SEED_PASSWORD: z.string().min(8).default(DEV_ADMIN_PASSWORD),
     ADMIN_SEED_NAME: z.string().min(1).default('Platform Owner'),
 
@@ -153,7 +219,7 @@ const envSchema = z
     PRICING_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(120),
     PRICING_MAX_QUOTE_ITEMS: z.coerce.number().int().min(1).max(500).default(50),
     COUPON_CODE_LENGTH: z.coerce.number().int().min(4).max(32).default(10),
-    PRICING_ENGINE_VERSION: z.coerce.number().int().min(1).max(1_000).default(1),
+    PRICING_ENGINE_VERSION: z.coerce.number().int().min(1).max(1_000).default(2),
 
     // --- storefront search (Prompt 7) ---
     SEARCH_DRIVER: z.enum(SEARCH_DRIVERS).default('sql'),
@@ -162,10 +228,13 @@ const envSchema = z
     SEARCH_SUGGEST_LIMIT: z.coerce.number().int().min(1).max(50).default(8),
     SEARCH_INDEX_BATCH: z.coerce.number().int().min(1).max(5_000).default(200),
     SEARCH_TYPO_TOLERANCE: z.enum(['true', 'false']).default('true'),
+    SEARCH_MEMO_MAX_DOCUMENTS: z.coerce.number().int().min(0).max(200_000).default(10_000),
     MEILI_HOST: z.string().url().optional(),
     MEILI_API_KEY: z.string().min(1).optional(),
     STOREFRONT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(120),
     PRODUCT_VIEW_DEDUPE_SECONDS: z.coerce.number().int().min(0).max(86_400).default(1_800),
+    LISTING_RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(60),
+    LISTING_RECONCILE_LEASE_SECONDS: z.coerce.number().int().min(30).max(3_600).default(300),
 
     // --- cart, wishlist, addresses (Prompt 8) ---
     CART_COOKIE_NAME: z.string().min(1).max(40).default('cw_cart'),
@@ -188,6 +257,11 @@ const envSchema = z
     MAIL_FROM: z.string().min(1).default('no-reply@clearwood.local'),
 
     PAYMENT_DRIVER: z.enum(PAYMENT_DRIVERS).default('mock'),
+    /**
+     * Razorpay is ON HOLD. `PAYMENT_DRIVER=razorpay` alone is refused: activating the live driver
+     * takes this second, deliberate switch as well, so it cannot happen by copying one line.
+     */
+    RAZORPAY_ENABLED: z.enum(['true', 'false']).default('false'),
     RAZORPAY_KEY_ID: z.string().min(1).optional(),
     RAZORPAY_KEY_SECRET: z.string().min(1).optional(),
     RAZORPAY_WEBHOOK_SECRET: z.string().min(1).optional(),
@@ -232,7 +306,7 @@ const envSchema = z
     SHIPPING_DRIVER: z.enum(SHIPPING_PROVIDER_DRIVERS).default('manual'),
     /**
      * The explicit assertion that a courier integration has been validated against a real sandbox.
-     * Production refuses to boot on an unverified provider without it.
+     * Without it, production keeps Shiprocket inert (see `resolveShippingDriver`).
      */
     SHIPPING_PROVIDER_VERIFIED: z.enum(['true', 'false']).default('false'),
     SHIPROCKET_ENABLED: z.enum(['true', 'false']).default('false'),
@@ -342,6 +416,15 @@ const envSchema = z
       requireKey('SMTP_PASS', value.SMTP_PASS, 'when MAIL_DRIVER=smtp');
     }
 
+    if (value.PAYMENT_DRIVER === 'razorpay' && value.RAZORPAY_ENABLED !== 'true') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['RAZORPAY_ENABLED'],
+        message:
+          'Razorpay is ON HOLD. PAYMENT_DRIVER=razorpay also needs RAZORPAY_ENABLED=true, set deliberately once the account and keys are validated.',
+      });
+    }
+
     if (value.PAYMENT_DRIVER === 'razorpay') {
       requireKey('RAZORPAY_KEY_ID', value.RAZORPAY_KEY_ID, 'when PAYMENT_DRIVER=razorpay');
       requireKey('RAZORPAY_KEY_SECRET', value.RAZORPAY_KEY_SECRET, 'when PAYMENT_DRIVER=razorpay');
@@ -382,33 +465,12 @@ const envSchema = z
       requireKey('SMS_SENDER_ID', value.SMS_SENDER_ID, `when OTP_DRIVER=${value.OTP_DRIVER}`);
     }
 
-    // Shiprocket is only usable with a real API user; the mock driver needs nothing.
-    if (value.SHIPROCKET_ENABLED === 'true' || value.SHIPPING_DRIVER === 'shiprocket') {
-      requireKey('SHIPROCKET_EMAIL', value.SHIPROCKET_EMAIL, 'when Shiprocket is enabled');
-      requireKey('SHIPROCKET_PASSWORD', value.SHIPROCKET_PASSWORD, 'when Shiprocket is enabled');
-      requireKey(
-        'SHIPROCKET_WEBHOOK_TOKEN',
-        value.SHIPROCKET_WEBHOOK_TOKEN,
-        'when Shiprocket is enabled (the webhook x-api-key is how we authenticate deliveries)',
-      );
-    }
-
-    /**
-     * The Shiprocket client has never spoken to Shiprocket — its endpoint paths come from published
-     * documentation and are unverified. Shipping real customer orders through it by accident would
-     * be worse than having no integration at all, so production must say out loud that somebody
-     * checked it.
+    /*
+     * Shiprocket is ON HOLD and its client is UNVERIFIED (its endpoint paths have never been tested
+     * against a live account). A missing credential or a missing verification therefore leaves it
+     * inert - `resolveShippingDriver` falls back to manual and says why at startup - instead of
+     * refusing to boot: a half-configured courier must never take the catalog and admin down.
      */
-    if (value.NODE_ENV === 'production' && value.SHIPPING_DRIVER === 'shiprocket') {
-      if (value.SHIPPING_PROVIDER_VERIFIED !== 'true') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['SHIPPING_DRIVER'],
-          message:
-            'the Shiprocket integration is UNVERIFIED (its endpoint paths have never been tested against a live account). Validate it against a real sandbox, then set SHIPPING_PROVIDER_VERIFIED=true to acknowledge that.',
-        });
-      }
-    }
 
     if (value.NODE_ENV === 'production') {
       const secretKeys = [
@@ -448,6 +510,15 @@ const envSchema = z
           code: z.ZodIssueCode.custom,
           path: ['ADMIN_SEED_PASSWORD'],
           message: 'must be changed before running in production',
+        });
+      }
+
+      // Also enforced from .env.example by productionSecrets; this copy holds without that file.
+      if (value.ADMIN_SEED_EMAIL.trim().toLowerCase() === DEV_ADMIN_EMAIL) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ADMIN_SEED_EMAIL'],
+          message: 'must be a real address before running in production',
         });
       }
 
@@ -546,6 +617,80 @@ export const splitOnHoldByDefault = env.SPLIT_ON_HOLD_DEFAULT === 'true';
 export const shiprocketEnabled = env.SHIPROCKET_ENABLED === 'true';
 /** False means the courier integration has never been validated against a live account. */
 export const shippingProviderVerified = env.SHIPPING_PROVIDER_VERIFIED === 'true';
+
+type ShippingConfig = Pick<
+  Env,
+  | 'NODE_ENV'
+  | 'SHIPPING_DRIVER'
+  | 'SHIPROCKET_ENABLED'
+  | 'SHIPPING_PROVIDER_VERIFIED'
+  | 'SHIPROCKET_EMAIL'
+  | 'SHIPROCKET_PASSWORD'
+  | 'SHIPROCKET_WEBHOOK_TOKEN'
+>;
+
+/**
+ * Shiprocket is ON HOLD. It may be reached - by the env default OR by a ShippingProvider row an
+ * admin switched on - only when SHIPROCKET_ENABLED=true and, in production, when
+ * SHIPPING_PROVIDER_VERIFIED=true as well.
+ */
+export function isShiprocketAllowed(value: ShippingConfig): boolean {
+  if (value.SHIPROCKET_ENABLED !== 'true') return false;
+  return value.NODE_ENV !== 'production' || value.SHIPPING_PROVIDER_VERIFIED === 'true';
+}
+
+/**
+ * The default shipping driver that will actually run. An unusable Shiprocket selection falls back
+ * to `manual` (the fully verified, admin-driven mode) and names the reason - key names only - so
+ * startup can say it out loud instead of refusing to boot.
+ */
+export function resolveShippingDriver(value: ShippingConfig): {
+  driver: Env['SHIPPING_DRIVER'];
+  heldBack: string | null;
+} {
+  if (value.SHIPPING_DRIVER !== 'shiprocket') {
+    return { driver: value.SHIPPING_DRIVER, heldBack: null };
+  }
+
+  if (value.SHIPROCKET_ENABLED !== 'true') {
+    return { driver: 'manual', heldBack: 'SHIPROCKET_ENABLED is not true (Shiprocket is on hold)' };
+  }
+  if (!isShiprocketAllowed(value)) {
+    return { driver: 'manual', heldBack: 'SHIPPING_PROVIDER_VERIFIED is not true in production' };
+  }
+
+  const missing = (
+    ['SHIPROCKET_EMAIL', 'SHIPROCKET_PASSWORD', 'SHIPROCKET_WEBHOOK_TOKEN'] as const
+  ).filter((key) => !value[key]);
+
+  if (missing.length > 0) {
+    return { driver: 'manual', heldBack: `not configured: ${missing.join(', ')}` };
+  }
+
+  return { driver: 'shiprocket', heldBack: null };
+}
+
+export const shiprocketAllowed = isShiprocketAllowed(env);
+export const effectiveShippingDriver = resolveShippingDriver(env).driver;
+
+export const razorpayEnabled = env.RAZORPAY_ENABLED === 'true';
+
+/**
+ * Whether checkout may take an online payment at all.
+ *
+ * The mock driver signs with constants that are committed to this repository, so in production it
+ * cannot vouch for anything: a forged signature would confirm an unpaid order. Until the real
+ * provider is deliberately enabled, production offers cash on delivery only.
+ */
+export function resolveOnlinePayments(
+  value: Pick<Env, 'NODE_ENV' | 'PAYMENT_DRIVER' | 'RAZORPAY_ENABLED'>,
+): boolean {
+  if (value.PAYMENT_DRIVER === 'razorpay') return value.RAZORPAY_ENABLED === 'true';
+  return value.NODE_ENV !== 'production';
+}
+
+export const onlinePaymentsEnabled = resolveOnlinePayments(env);
+
 export const notificationsEnabled = env.NOTIFICATIONS_ENABLED === 'true';
 /** Customer-initiated returns. Off means returns are raised by an admin on the customer's behalf. */
 export const customerReturnsEnabled = env.FEATURE_CUSTOMER_RETURNS === 'true';
@@ -563,7 +708,7 @@ export const activeDrivers = {
   storage: env.STORAGE_DRIVER,
   mail: env.MAIL_DRIVER,
   payment: env.PAYMENT_DRIVER,
-  shipping: env.SHIPPING_DRIVER,
+  shipping: effectiveShippingDriver,
   otp: env.OTP_DRIVER,
   search: env.SEARCH_DRIVER,
 } as const;

@@ -129,6 +129,10 @@ const productDetailSchema = registry.register(
       gallery: z.array(anyObject),
       specs: z.array(anyObject),
       related: z.array(productCardSchema),
+      frequentlyBoughtTogether: z.array(productCardSchema),
+      relationGroups: z
+        .array(z.object({ type: z.string(), items: z.array(productCardSchema) }))
+        .describe('Curated relations grouped by type; only products a shopper can open'),
       jsonLd: z.array(anyObject),
     })
     .passthrough(),
@@ -221,7 +225,11 @@ registry.registerPath({
   method: 'get',
   path: `${API_PREFIX}/catalog/products/{slug}/related`,
   tags: ['Storefront'],
-  summary: 'Related products, falling back to the same category',
+  summary: 'Related products: one curated type with `type`, else all curated or the same category',
+  description:
+    'Without `type`: every curated relation except FREQUENTLY_BOUGHT, falling back to the ' +
+    "primary category's best sellers when none is curated. With `type`: exactly that curated " +
+    'group, in position order, and an empty list when there is none (never the fallback).',
   request: { params: slugParamSchema, query: relatedQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(z.array(productCardSchema)), 'Related products'),

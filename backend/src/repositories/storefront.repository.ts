@@ -1,5 +1,8 @@
 import type { Brand, Category, Collection, Prisma } from '@prisma/client';
 
+import { CARD_RENDITION_LABELS } from '@shared/constants';
+import { BROWSE_VISIBILITIES, REACHABLE_VISIBILITIES, SEARCH_VISIBILITIES } from '@shared/enums';
+
 import { prisma } from '../config/prisma';
 
 import { notDeleted } from './helpers';
@@ -9,21 +12,79 @@ import { notDeleted } from './helpers';
  * shape DTOs; none of them import the client.
  */
 
-/** Only a published, publicly reachable product is ever indexed or listed. */
-export function publishedWhere(now = new Date()): Prisma.ProductWhereInput {
+function live(visibilities: readonly string[], now: Date): Prisma.ProductWhereInput {
   return {
     ...notDeleted,
     status: 'ACTIVE',
-    visibility: { in: ['PUBLIC', 'SEARCH_ONLY'] },
+    visibility: { in: [...visibilities] },
     OR: [{ publishedAt: null }, { publishedAt: { lte: now } }],
   };
 }
 
+/** Live and not HIDDEN: may be opened by slug or shown where it is linked explicitly. */
+export function reachableWhere(now = new Date()): Prisma.ProductWhereInput {
+  return live(REACHABLE_VISIBILITIES, now);
+}
+
+/** Live and PUBLIC or CATALOG_ONLY: may appear in category, collection and curated listings. */
+export function browsableWhere(now = new Date()): Prisma.ProductWhereInput {
+  return live(BROWSE_VISIBILITIES, now);
+}
+
+/** Live and PUBLIC or SEARCH_ONLY: may be indexed for search and returned for a query. */
+export function searchableWhere(now = new Date()): Prisma.ProductWhereInput {
+  return live(SEARCH_VISIBILITIES, now);
+}
+
+/** reachableWhere for a row already in memory (the cart and slug resolution judge loaded rows). */
+export function isReachable(
+  product: { deletedAt: Date | null; status: string; visibility: string; publishedAt: Date | null },
+  now = new Date(),
+): boolean {
+  return (
+    product.deletedAt === null &&
+    product.status === 'ACTIVE' &&
+    (REACHABLE_VISIBILITIES as readonly string[]).includes(product.visibility) &&
+    (product.publishedAt === null || product.publishedAt.getTime() <= now.getTime())
+  );
+}
+
+/** A collection is public while active, not deleted and inside its [startsAt, endsAt) window. */
+export function liveCollectionWhere(now = new Date()): Prisma.CollectionWhereInput {
+  return {
+    ...notDeleted,
+    isActive: true,
+    AND: [
+      { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+      { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
+    ],
+  };
+}
+
+export function isCollectionLive(
+  collection: {
+    deletedAt: Date | null;
+    isActive: boolean;
+    startsAt: Date | null;
+    endsAt: Date | null;
+  },
+  now = new Date(),
+): boolean {
+  return (
+    collection.deletedAt === null &&
+    collection.isActive &&
+    (collection.startsAt === null || collection.startsAt.getTime() <= now.getTime()) &&
+    (collection.endsAt === null || collection.endsAt.getTime() > now.getTime())
+  );
+}
+
 const indexInclude = {
   brand: { select: { id: true, name: true, slug: true } },
+  // Only categories a shopper can open; the primary first, whatever its merchandising position.
   categories: {
+    where: { category: { deletedAt: null, isActive: true } },
     include: { category: { select: { id: true, name: true, slug: true, path: true } } },
-    orderBy: [{ position: 'asc' as const }],
+    orderBy: [{ isPrimary: 'desc' as const }, { position: 'asc' as const }],
   },
   attributeValues: {
     include: {
@@ -43,6 +104,7 @@ const indexInclude = {
               id: true,
               code: true,
               label: true,
+              description: true,
               colorHex: true,
               swatchMediaId: true,
               position: true,
@@ -54,35 +116,99 @@ const indexInclude = {
   },
 } satisfies Prisma.ProductInclude;
 
+/** Exactly what a product card renders and prices from; descriptions, SEO and specs stay in MySQL. */
 const cardInclude = {
+  id: true,
+  slug: true,
+  sku: true,
+  name: true,
+  subtitle: true,
+  shortDescription: true,
+  brandId: true,
+  basePricePaise: true,
+  compareAtPricePaise: true,
+  priceNote: true,
+  isMadeToOrder: true,
+  leadTimeDays: true,
+  allowCustomization: true,
+  manufacturedInHouse: true,
+  ratingAvgBp: true,
+  ratingCount: true,
+  soldCount: true,
+  isNewArrival: true,
+  isFeatured: true,
+  featuredUntil: true,
+  isBestSeller: true,
+  isSpecialCollection: true,
+  badgeText: true,
+  badgeColor: true,
+  publishedAt: true,
+  createdAt: true,
   brand: { select: { id: true, name: true, slug: true } },
   categories: {
-    include: { category: { select: { id: true, name: true, slug: true, path: true } } },
-    orderBy: [{ position: 'asc' as const }],
+    where: { category: { deletedAt: null, isActive: true } },
+    select: {
+      categoryId: true,
+      category: { select: { id: true, name: true, slug: true, path: true } },
+    },
+    orderBy: [{ isPrimary: 'desc' as const }, { position: 'asc' as const }],
   },
   variants: {
     where: { ...notDeleted, isActive: true },
     orderBy: [{ position: 'asc' as const }],
-    include: { attributeValues: { include: { attributeValue: true, attribute: true } } },
+    select: {
+      id: true,
+      isDefault: true,
+      stockQty: true,
+      reservedQty: true,
+      allowBackorder: true,
+      stockStatus: true,
+      attributeValues: {
+        select: {
+          attributeValueId: true,
+          attribute: { select: { showInSwatch: true } },
+          attributeValue: { select: { label: true, colorHex: true, swatchMediaId: true } },
+        },
+      },
+    },
   },
   media: {
     where: { role: 'PRIMARY' },
     take: 1,
-    include: { media: { include: { variants: true } } },
+    select: {
+      mediaId: true,
+      altText: true,
+      media: {
+        select: {
+          path: true,
+          altText: true,
+          width: true,
+          height: true,
+          blurhash: true,
+          lqipDataUri: true,
+          dominantColorHex: true,
+          focalPointX: true,
+          focalPointY: true,
+          variants: {
+            where: { label: { in: [...CARD_RENDITION_LABELS] } },
+            select: { label: true, format: true, path: true, width: true, height: true },
+          },
+        },
+      },
+    },
     orderBy: [{ position: 'asc' as const }],
   },
-  stat: true,
-} satisfies Prisma.ProductInclude;
+} satisfies Prisma.ProductSelect;
 
 export type ProductForIndex = Prisma.ProductGetPayload<{ include: typeof indexInclude }>;
-export type ProductCardRow = Prisma.ProductGetPayload<{ include: typeof cardInclude }>;
+export type ProductCardRow = Prisma.ProductGetPayload<{ select: typeof cardInclude }>;
 
 export const storefrontRepository = {
   /* ------------------------------------------------------------- indexing */
 
   findIndexable(afterId: string | null, take: number): Promise<ProductForIndex[]> {
     return prisma.product.findMany({
-      where: publishedWhere(),
+      where: searchableWhere(),
       include: indexInclude,
       orderBy: { id: 'asc' },
       take,
@@ -91,19 +217,80 @@ export const storefrontRepository = {
   },
 
   findIndexableById(id: string): Promise<ProductForIndex | null> {
-    return prisma.product.findFirst({ where: { id, ...publishedWhere() }, include: indexInclude });
+    return prisma.product.findFirst({ where: { id, ...searchableWhere() }, include: indexInclude });
+  },
+
+  findIndexableByIds(ids: string[]): Promise<ProductForIndex[]> {
+    return prisma.product.findMany({
+      where: { id: { in: ids }, ...searchableWhere() },
+      include: indexInclude,
+    });
+  },
+
+  /** The PDP and option matrix: the same shape as a search document, for any reachable product. */
+  findDetailById(id: string): Promise<ProductForIndex | null> {
+    return prisma.product.findFirst({ where: { id, ...reachableWhere() }, include: indexInclude });
   },
 
   countIndexable(): Promise<number> {
-    return prisma.product.count({ where: publishedWhere() });
+    return prisma.product.count({ where: searchableWhere() });
   },
 
   async listIndexableIds(): Promise<string[]> {
     const rows = await prisma.product.findMany({
-      where: publishedWhere(),
+      where: searchableWhere(),
       select: { id: true },
     });
     return rows.map((row) => row.id);
+  },
+
+  /** Products linked anywhere in these categories' subtrees, deleted nodes included. */
+  async findProductIdsInCategorySubtrees(categoryIds: string[]): Promise<string[]> {
+    if (categoryIds.length === 0) return [];
+    const roots = await prisma.category.findMany({
+      where: { id: { in: categoryIds } },
+      select: { path: true },
+    });
+    if (roots.length === 0) return [];
+
+    const rows = await prisma.productCategory.findMany({
+      where: {
+        category: {
+          OR: roots.flatMap((root) => [
+            { path: root.path },
+            { path: { startsWith: `${root.path}/` } },
+          ]),
+        },
+      },
+      select: { productId: true },
+      distinct: ['productId'],
+    });
+    return rows.map((row) => row.productId);
+  },
+
+  async findProductIdsByBrand(brandId: string): Promise<string[]> {
+    const rows = await prisma.product.findMany({
+      where: { brandId, ...notDeleted },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
+  },
+
+  /** Products describing themselves with this attribute, as a spec or as a variant option. */
+  async findProductIdsByAttribute(attributeId: string): Promise<string[]> {
+    const [specs, options] = await Promise.all([
+      prisma.productAttributeValue.findMany({
+        where: { attributeId },
+        select: { productId: true },
+        distinct: ['productId'],
+      }),
+      prisma.productVariant.findMany({
+        where: { attributeValues: { some: { attributeId } } },
+        select: { productId: true },
+        distinct: ['productId'],
+      }),
+    ]);
+    return [...new Set([...specs, ...options].map((row) => row.productId))];
   },
 
   findIndexableCategories(): Promise<Category[]> {
@@ -112,8 +299,8 @@ export const storefrontRepository = {
 
   findIndexableCollections(): Promise<(Collection & { _count: { products: number } })[]> {
     return prisma.collection.findMany({
-      where: { ...notDeleted, isActive: true },
-      include: { _count: { select: { products: true } } },
+      where: liveCollectionWhere(),
+      include: { _count: { select: { products: { where: { product: browsableWhere() } } } } },
     });
   },
 
@@ -125,32 +312,6 @@ export const storefrontRepository = {
 
   findIds(where: Prisma.ProductWhereInput, orderBy: Prisma.ProductOrderByWithRelationInput[]) {
     return prisma.product.findMany({ where, orderBy, select: { id: true } });
-  },
-
-  /**
-   * Every sort key in one query. Ordering then happens in memory with a stable `id` tiebreak,
-   * which is what guarantees a page boundary never duplicates or drops a row.
-   */
-  findCandidates(where: Prisma.ProductWhereInput) {
-    return prisma.product.findMany({
-      where,
-      orderBy: { id: 'asc' },
-      select: {
-        id: true,
-        name: true,
-        position: true,
-        publishedAt: true,
-        createdAt: true,
-        soldCount: true,
-        ratingAvgBp: true,
-        ratingCount: true,
-        basePricePaise: true,
-        compareAtPricePaise: true,
-        isMadeToOrder: true,
-        stat: { select: { popularityScore: true } },
-        categories: { select: { categoryId: true, position: true } },
-      },
-    });
   },
 
   findAttributeValueOwners(valueIds: string[]): Promise<{ id: string; attributeId: string }[]> {
@@ -167,14 +328,23 @@ export const storefrontRepository = {
     });
   },
 
+  /** Cards for a public surface: products that stopped being reachable are simply absent. */
   findCards(ids: string[]): Promise<ProductCardRow[]> {
-    return prisma.product.findMany({ where: { id: { in: ids } }, include: cardInclude });
+    return prisma.product.findMany({
+      where: { id: { in: ids }, ...reachableWhere() },
+      select: cardInclude,
+    });
+  },
+
+  /** Admin reports only: every product, whatever its state. */
+  findCardsAnyState(ids: string[]): Promise<ProductCardRow[]> {
+    return prisma.product.findMany({ where: { id: { in: ids } }, select: cardInclude });
   },
 
   findCardBySlug(slug: string): Promise<ProductCardRow | null> {
     return prisma.product.findFirst({
-      where: { slug, ...publishedWhere() },
-      include: cardInclude,
+      where: { slug, ...reachableWhere() },
+      select: cardInclude,
     });
   },
 
@@ -200,16 +370,14 @@ export const storefrontRepository = {
   },
 
   findCollectionBySlug(slug: string): Promise<Collection | null> {
-    return prisma.collection.findFirst({ where: { slug, ...notDeleted, isActive: true } });
+    return prisma.collection.findFirst({ where: { slug, ...liveCollectionWhere() } });
   },
 
-  async findCollectionProductIds(collectionId: string): Promise<string[]> {
-    const rows = await prisma.collectionProduct.findMany({
-      where: { collectionId },
-      orderBy: [{ position: 'asc' }],
-      select: { productId: true },
+  /** What the collection's own listing can show, so the two numbers always agree. */
+  countCollectionProducts(collectionId: string): Promise<number> {
+    return prisma.collectionProduct.count({
+      where: { collectionId, product: browsableWhere() },
     });
-    return rows.map((row) => row.productId);
   },
 
   findBrandsByIds(ids: string[]): Promise<Brand[]> {
@@ -220,112 +388,19 @@ export const storefrontRepository = {
     return prisma.brand.findMany({ where: { slug: { in: slugs }, ...notDeleted } });
   },
 
-  /* --------------------------------------------------------------- facets */
-
-  /**
-   * Every (productId, attributeValueId) pair inside a candidate set, from both the product's own
-   * specs and its variants. Deduped by the caller, which is what turns variant hits into product
-   * counts.
-   */
-  async findAttributePairs(
-    productIds: string[],
-  ): Promise<{ productId: string; attributeId: string; attributeValueId: string }[]> {
-    if (productIds.length === 0) return [];
-
-    const [specs, variantValues] = await Promise.all([
-      prisma.productAttributeValue.findMany({
-        where: { productId: { in: productIds }, attributeValueId: { not: null } },
-        select: { productId: true, attributeId: true, attributeValueId: true },
-      }),
-      prisma.variantAttributeValue.findMany({
-        where: { variant: { productId: { in: productIds }, ...notDeleted } },
-        select: {
-          attributeId: true,
-          attributeValueId: true,
-          variant: { select: { productId: true } },
-        },
-      }),
-    ]);
-
-    return [
-      ...specs.map((row) => ({
-        productId: row.productId,
-        attributeId: row.attributeId,
-        attributeValueId: row.attributeValueId as string,
-      })),
-      ...variantValues.map((row) => ({
-        productId: row.variant.productId,
-        attributeId: row.attributeId,
-        attributeValueId: row.attributeValueId,
-      })),
-    ];
-  },
-
-  async countByBrand(productIds: string[]): Promise<{ brandId: string; count: number }[]> {
-    if (productIds.length === 0) return [];
-
-    const rows = await prisma.product.groupBy({
-      by: ['brandId'],
-      where: { id: { in: productIds }, brandId: { not: null } },
-      _count: { _all: true },
-    });
-
-    return rows
-      .filter((row): row is typeof row & { brandId: string } => row.brandId !== null)
-      .map((row) => ({ brandId: row.brandId, count: row._count._all }));
-  },
-
-  findFlagsAndRatings(productIds: string[]) {
-    return prisma.product.findMany({
-      where: { id: { in: productIds } },
-      select: {
-        id: true,
-        brandId: true,
-        ratingAvgBp: true,
-        isMadeToOrder: true,
-        allowCustomization: true,
-        compareAtPricePaise: true,
-        basePricePaise: true,
-      },
-    });
-  },
-
   /* ----------------------------------------------------------------- misc */
-
-  async findStockByProduct(
-    productIds: string[],
-  ): Promise<{ productId: string; stockQty: number; stockStatus: string }[]> {
-    if (productIds.length === 0) return [];
-
-    const rows = await prisma.productVariant.findMany({
-      where: { productId: { in: productIds }, ...notDeleted, isActive: true },
-      select: { productId: true, stockQty: true, reservedQty: true, stockStatus: true },
-    });
-
-    const byProduct = new Map<string, { stockQty: number; stockStatus: string }>();
-    for (const row of rows) {
-      const current = byProduct.get(row.productId) ?? { stockQty: 0, stockStatus: 'OUT_OF_STOCK' };
-      const available = Math.max(row.stockQty - row.reservedQty, 0);
-      byProduct.set(row.productId, {
-        stockQty: current.stockQty + available,
-        stockStatus: available > 0 ? row.stockStatus : current.stockStatus,
-      });
-    }
-
-    return [...byProduct].map(([productId, value]) => ({ productId, ...value }));
-  },
 
   findRelations(productId: string, type?: string) {
     return prisma.productRelation.findMany({
       where: { productId, ...(type ? { type } : {}) },
-      orderBy: [{ position: 'asc' }],
+      orderBy: [{ position: 'asc' }, { id: 'asc' }],
       select: { relatedProductId: true, type: true, position: true },
     });
   },
 
   findCollectionsForProduct(productId: string) {
     return prisma.collectionProduct.findMany({
-      where: { productId, collection: { ...notDeleted, isActive: true } },
+      where: { productId, collection: liveCollectionWhere() },
       include: { collection: { select: { id: true, slug: true, name: true } } },
       orderBy: [{ position: 'asc' }],
     });
@@ -373,9 +448,9 @@ export const storefrontRepository = {
 
   findActiveCollections(): Promise<(Collection & { _count: { products: number } })[]> {
     return prisma.collection.findMany({
-      where: { ...notDeleted, isActive: true },
-      orderBy: [{ position: 'asc' }, { name: 'asc' }],
-      include: { _count: { select: { products: true } } },
+      where: liveCollectionWhere(),
+      orderBy: [{ position: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+      include: { _count: { select: { products: { where: { product: browsableWhere() } } } } },
     });
   },
 

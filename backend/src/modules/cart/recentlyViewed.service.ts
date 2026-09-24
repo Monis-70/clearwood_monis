@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import { recentlyViewedRepository } from '../../repositories/cart.repository';
 import { storefrontRepository } from '../../repositories/storefront.repository';
 import { toProductCard } from '../storefront/card.mapper';
+import { loadMerchandising } from '../storefront/merchandising';
 import { productQueryService } from '../storefront/productQuery.service';
 
 import type { CartOwner } from './cartIdentity';
@@ -33,18 +34,23 @@ export const recentlyViewedService = {
     const ids = rows.map((row) => row.productId);
     const cards = await storefrontRepository.findCards(ids);
 
-    const [prices, indexed] = await Promise.all([
+    const [prices, indexed, merchandising] = await Promise.all([
       productQueryService.resolveDisplayPrices(cards, { customerId: owner.customerId }),
       productQueryService.priceIndex(ids),
+      loadMerchandising(),
     ]);
 
     const byId = new Map(
       cards.map((card) => [
         card.id,
-        toProductCard(card, {
-          pricePaise: prices.get(card.id) ?? card.basePricePaise,
-          indexed: indexed.get(card.id) ?? { minPricePaise: null, maxPricePaise: null },
-        }),
+        toProductCard(
+          card,
+          {
+            pricePaise: prices.get(card.id) ?? card.basePricePaise,
+            indexed: indexed.get(card.id) ?? { minPricePaise: null, maxPricePaise: null },
+          },
+          merchandising,
+        ),
       ]),
     );
 

@@ -10,12 +10,26 @@ export const refreshTokenRepository = {
     return prisma.refreshToken.findUnique({ where: { tokenHash } });
   },
 
+  findById(id: string): Promise<RefreshToken | null> {
+    return prisma.refreshToken.findUnique({ where: { id } });
+  },
+
   create(data: Prisma.RefreshTokenUncheckedCreateInput): Promise<RefreshToken> {
     return prisma.refreshToken.create({ data });
   },
 
-  markUsed(id: string): Promise<RefreshToken> {
-    return prisma.refreshToken.update({ where: { id }, data: { usedAt: new Date() } });
+  /**
+   * Marks the token used only if nothing else has: the predicate is on the row's OWN columns, so
+   * a zero count unambiguously means another request rotated or revoked it first. Exactly one
+   * caller can ever win a given token, which is what stops two concurrent refreshes forking one
+   * session into two live ones.
+   */
+  async claim(id: string): Promise<boolean> {
+    const result = await prisma.refreshToken.updateMany({
+      where: { id, usedAt: null, revokedAt: null },
+      data: { usedAt: new Date() },
+    });
+    return result.count === 1;
   },
 
   async revokeFamily(familyId: string, reason: string): Promise<number> {

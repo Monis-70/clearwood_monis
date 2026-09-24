@@ -6,7 +6,9 @@ import { prisma } from '../config/prisma';
 
 const itemInclude = {
   category: { select: { slug: true, isActive: true } },
-  collection: { select: { slug: true, isActive: true } },
+  collection: {
+    select: { slug: true, isActive: true, deletedAt: true, startsAt: true, endsAt: true },
+  },
 } satisfies Prisma.NavigationItemInclude;
 
 export type NavigationItemRow = Prisma.NavigationItemGetPayload<{ include: typeof itemInclude }>;

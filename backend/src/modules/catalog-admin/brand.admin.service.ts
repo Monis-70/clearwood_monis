@@ -42,7 +42,7 @@ export const brandAdminService = {
       prisma.brand.findMany({
         ...args,
         ...skipTake(query),
-        orderBy: [{ position: 'asc' }, { name: 'asc' }],
+        orderBy: [{ position: 'asc' }, { name: 'asc' }, { id: 'asc' }],
       }),
       prisma.brand.count(args),
     ]);

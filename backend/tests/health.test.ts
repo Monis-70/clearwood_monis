@@ -1,7 +1,9 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app';
+import { cache } from '../src/container';
+import { healthService } from '../src/services/health.service';
 
 const app = createApp();
 
@@ -36,5 +38,39 @@ describe('GET /ready', () => {
     expect(report.dependencies.database).toMatchObject({ status: 'up', driver: 'mysql' });
     expect(report.dependencies.cache).toMatchObject({ status: 'up', driver: 'memory' });
     expect(typeof report.dependencies.database.latencyMs).toBe('number');
+  });
+
+  it('stays in rotation when only the cache is down: every read falls back to MySQL', async () => {
+    const ping = vi.spyOn(cache, 'ping').mockResolvedValue(false);
+    try {
+      const response = await request(app).get('/ready');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.status).toBe('degraded');
+      expect(response.body.data.dependencies.database.status).toBe('up');
+      expect(response.body.data.dependencies.cache.status).toBe('down');
+    } finally {
+      ping.mockRestore();
+    }
+  });
+
+  it('answers 503 when the database is down', async () => {
+    const readiness = vi.spyOn(healthService, 'getReadiness').mockResolvedValue({
+      status: 'unavailable',
+      timestamp: new Date().toISOString(),
+      dependencies: {
+        database: { status: 'down', driver: 'mysql', latencyMs: 3, error: 'unavailable' },
+        cache: { status: 'up', driver: 'memory', latencyMs: 0 },
+      },
+    });
+    try {
+      const response = await request(app).get('/ready');
+
+      expect(response.status).toBe(503);
+      expect(response.body.error.code).toBe('SERVICE_UNAVAILABLE');
+      expect(response.body.error.details.dependencies.database.status).toBe('down');
+    } finally {
+      readiness.mockRestore();
+    }
   });
 });

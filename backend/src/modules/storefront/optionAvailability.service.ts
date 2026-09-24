@@ -3,6 +3,7 @@ import type { OptionAvailabilityDto, OptionValueAvailabilityDto } from '@shared/
 import type { ProductForIndex } from '../../repositories/storefront.repository';
 import { storefrontRepository } from '../../repositories/storefront.repository';
 import { AppError } from '../../utils/AppError';
+import { isVariantAvailable } from '../catalog-admin/availability';
 import { pricingFacade } from '../pricing/pricing.facade';
 
 /**
@@ -13,16 +14,12 @@ import { pricingFacade } from '../pricing/pricing.facade';
  * The UI narrows progressively by intersecting `combinations` with whatever is already selected.
  */
 
-function available(variant: { stockQty: number; reservedQty: number; allowBackorder: boolean }) {
-  return variant.allowBackorder || Math.max(variant.stockQty - variant.reservedQty, 0) > 0;
-}
-
 export const optionAvailabilityService = {
   async forProduct(
     productId: string,
     selection: { variantId?: string | undefined; optionValueIds?: string[] },
   ): Promise<OptionAvailabilityDto> {
-    const product = await storefrontRepository.findIndexableById(productId);
+    const product = await storefrontRepository.findDetailById(productId);
     if (!product) throw AppError.notFound('Product not found', { productId });
 
     return this.build(product, selection);
@@ -38,7 +35,7 @@ export const optionAvailabilityService = {
     const combinations = variants.map((variant) => ({
       variantId: variant.id,
       valueIds: variant.attributeValues.map((link) => link.attributeValueId),
-      isInStock: product.isMadeToOrder || available(variant),
+      isInStock: isVariantAvailable(variant, product),
     }));
 
     /* Price deltas are quoted by the P6 engine, one call for every variant plus the default. */
@@ -67,7 +64,7 @@ export const optionAvailabilityService = {
         byAttribute.set(link.attributeId, group);
 
         const existing = group.values.get(link.attributeValueId);
-        const inStock = product.isMadeToOrder || available(variant);
+        const inStock = isVariantAvailable(variant, product);
 
         if (existing) {
           existing.variantIds.push(variant.id);
@@ -82,6 +79,7 @@ export const optionAvailabilityService = {
           valueId: link.attributeValueId,
           valueCode: link.attributeValue.code,
           label: link.attributeValue.label,
+          description: link.attributeValue.description,
           colorHex: link.attributeValue.colorHex,
           swatchMediaId: link.attributeValue.swatchMediaId,
           isAvailable: true,
@@ -144,13 +142,13 @@ export const optionAvailabilityService = {
     const deltas = new Map<string, number>();
     if (variants.length === 0) return deltas;
 
-    const breakdown = await pricingFacade.quoteCart({
+    const lines = await pricingFacade.quoteEach({
       items: variants.map((variant) => ({ productId, variantId: variant.id, qty: 1 })),
       channel: 'WEB',
     });
 
     const byVariant = new Map(
-      breakdown.lines.map((line, index) => [variants[index]!.id, line.unitPricePaise]),
+      lines.map((line, index) => [variants[index]!.id, line.unitPricePaise]),
     );
 
     const base =

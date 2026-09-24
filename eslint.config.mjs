@@ -38,9 +38,9 @@ export default tseslint.config(
   /**
    * An UNVERIFIED integration may only be reached through its driver factory.
    *
-   * The env gate stops production booting on it, but nothing stopped a developer importing the
-   * class directly and quietly depending on endpoint paths that have never been validated. The
-   * factory is the one place that is allowed to know it exists.
+   * The env gate keeps it inert until it is enabled and verified, but nothing stopped a developer
+   * importing the class directly and quietly depending on endpoint paths that have never been
+   * validated. The factory is the one place that is allowed to know it exists.
    */
   {
     files: ['**/*.{ts,tsx}'],

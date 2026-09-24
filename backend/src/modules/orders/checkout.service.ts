@@ -14,7 +14,7 @@ import type {
 } from '@shared/types/order';
 import type { PriceBreakdown } from '@shared/types/pricing';
 
-import { codEnabled, env } from '../../config/env';
+import { codEnabled, env, onlinePaymentsEnabled } from '../../config/env';
 import { logger } from '../../config/logger';
 import { prisma } from '../../config/prisma';
 import { payment as paymentDriver } from '../../container';
@@ -827,7 +827,17 @@ export const checkoutService = {
     amountPaise: number,
     cart: CartWithItems,
   ): Promise<void> {
-    if (provider !== 'COD') return;
+    if (provider !== 'COD') {
+      // Razorpay is on hold, and the mock cannot vouch for a payment in production.
+      if (!onlinePaymentsEnabled) {
+        throw new AppError(
+          422,
+          'ONLINE_PAYMENT_UNAVAILABLE',
+          'Online payment is not available yet — please choose cash on delivery',
+        );
+      }
+      return;
+    }
 
     if (!codEnabled) {
       throw new AppError(422, 'COD_UNAVAILABLE', 'Cash on delivery is switched off');
@@ -872,8 +882,8 @@ export const checkoutService = {
       {
         provider: 'RAZORPAY',
         label: 'Card, UPI, netbanking or wallet',
-        isAvailable: true,
-        unavailableReason: null,
+        isAvailable: onlinePaymentsEnabled,
+        unavailableReason: onlinePaymentsEnabled ? null : 'Online payment is not available yet',
       },
       {
         provider: 'COD',

@@ -5,8 +5,8 @@ import path from 'node:path';
  * Production refuses to boot while a secret is still the value shipped in `.env.example`.
  *
  * Several secrets are knowingly placeholders during development, which is fine, and catastrophic
- * in production. A note in a document will not survive the next six prompts, so this is the same
- * mechanism the UNVERIFIED shipping driver already uses: the process simply does not start.
+ * in production. A note in a document will not survive the next six prompts, so the process simply
+ * does not start.
  *
  * The placeholder list is DERIVED from `.env.example` rather than typed out a second time. A
  * second hardcoded copy would drift, and the copy that drifts is always the one doing the

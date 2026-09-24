@@ -9,6 +9,8 @@ import { catalogEvents } from '../../events/catalogEvents';
 import { pageResult, skipTake, type PageResult } from '../../repositories/helpers';
 import { AppError } from '../../utils/AppError';
 
+import { isVariantAvailable } from './availability';
+
 /**
  * Stock movement. `ProductVariant.stockQty` may ONLY change here.
  *
@@ -100,6 +102,23 @@ async function loadVariant(id: string, client: Prisma.TransactionClient | typeof
   });
   if (!variant) throw AppError.notFound('Variant not found', { variantId: id });
   return variant;
+}
+
+/** Did moving `reservedQty` make the variant orderable or unorderable? */
+function flips(current: Awaited<ReturnType<typeof loadVariant>>, nextReservedQty: number): boolean {
+  return (
+    isVariantAvailable(current, current.product) !==
+    isVariantAvailable({ ...current, reservedQty: nextReservedQty }, current.product)
+  );
+}
+
+/*
+ * A reservation changes nothing a shopper sees unless it takes the last unit or gives it back, so
+ * only that flip is announced: announcing every hold would empty the storefront caches on every
+ * checkout. After commit, as for adjust().
+ */
+function announceFlip(flipped: boolean, productId: string, variantId: string): void {
+  if (flipped) catalogEvents.emit('inventory.changed', { productId, variantId });
 }
 
 export const inventoryService = {
@@ -238,7 +257,7 @@ export const inventoryService = {
   ): Promise<number> {
     if (qty <= 0) throw AppError.validation('Reservation quantity must be positive', { qty });
 
-    return prisma.$transaction(async (tx) => {
+    const outcome = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ProductVariant WHERE id = ${variantId} FOR UPDATE`;
 
       const current = await loadVariant(variantId, tx);
@@ -264,8 +283,15 @@ export const inventoryService = {
       });
 
       void ref;
-      return nextReserved;
+      return {
+        nextReserved,
+        productId: current.productId,
+        flipped: flips(current, nextReserved),
+      };
     });
+
+    announceFlip(outcome.flipped, outcome.productId, variantId);
+    return outcome.nextReserved;
   },
 
   /**
@@ -279,12 +305,12 @@ export const inventoryService = {
   ): Promise<number> {
     if (qty <= 0) throw AppError.validation('Release quantity must be positive', { qty });
 
-    return prisma.$transaction(async (tx) => {
+    const outcome = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ProductVariant WHERE id = ${variantId} FOR UPDATE`;
 
       const current = await loadVariant(variantId, tx);
       const releasable = Math.min(qty, current.reservedQty);
-      if (releasable === 0) return 0;
+      if (releasable === 0) return { releasable, productId: current.productId, flipped: false };
 
       await tx.productVariant.update({
         where: { id: variantId },
@@ -292,8 +318,15 @@ export const inventoryService = {
       });
 
       void ref;
-      return releasable;
+      return {
+        releasable,
+        productId: current.productId,
+        flipped: flips(current, current.reservedQty - releasable),
+      };
     });
+
+    announceFlip(outcome.flipped, outcome.productId, variantId);
+    return outcome.releasable;
   },
 
   async bulkAdjust(
@@ -348,7 +381,7 @@ export const inventoryService = {
       prisma.inventoryLedger.findMany({
         ...args,
         ...skipTake(query),
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
       prisma.inventoryLedger.count(args),
     ]);
@@ -363,7 +396,7 @@ export const inventoryService = {
         isActive: true,
         ...(query.includeBackorder ? {} : { allowBackorder: false }),
       },
-      orderBy: { stockQty: 'asc' },
+      orderBy: [{ stockQty: 'asc' }, { id: 'asc' }],
     });
 
     const threshold = query.threshold;

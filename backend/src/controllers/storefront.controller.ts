@@ -116,7 +116,11 @@ export const storefrontController = {
       identityOf(req),
     );
 
-    ok(res, outcome.related.slice(0, query.limit));
+    // A named type is exactly that curated group - never the category fallback under its name.
+    const items = query.type
+      ? (outcome.groups.find((group) => group.type === query.type)?.items ?? [])
+      : outcome.related;
+    ok(res, items.slice(0, query.limit));
   },
 
   async batch(req: Request, res: Response): Promise<void> {

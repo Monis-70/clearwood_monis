@@ -51,8 +51,17 @@ import { pricingContextLoader } from './pricingContext.loader';
 
 const appliesToColumn = jsonColumn<Record<string, unknown>>(undefined, 'Coupon.appliesToJson');
 
+/** Groups, price lists and tiers feed a catalog unit price: the listing index is re-priced. */
 async function touched(): Promise<void> {
   await catalogCacheService.invalidatePricing();
+}
+
+/**
+ * Coupons, discount rules, shipping, pricing settings and group membership never change a
+ * catalog unit price (engine steps 1-7, the listing index's basis): caches only.
+ */
+async function touchedCheckout(): Promise<void> {
+  await catalogCacheService.invalidatePricing({ affectsCatalogPrices: false });
 }
 
 /* ------------------------------------------------------- customer groups */
@@ -141,7 +150,7 @@ export const customerGroupService = {
       added += 1;
     }
 
-    await touched();
+    await touchedCheckout();
     return added;
   },
 
@@ -149,7 +158,7 @@ export const customerGroupService = {
     const { count } = await prisma.customerGroupMember.deleteMany({
       where: { groupId, customerId: { in: customerIds } },
     });
-    await touched();
+    await touchedCheckout();
     return count;
   },
 
@@ -272,7 +281,11 @@ export const tierPriceService = {
     };
 
     const [items, total] = await Promise.all([
-      prisma.tierPrice.findMany({ ...args, ...skipTake(query), orderBy: { minQty: 'asc' } }),
+      prisma.tierPrice.findMany({
+        ...args,
+        ...skipTake(query),
+        orderBy: [{ minQty: 'asc' }, { id: 'asc' }],
+      }),
       prisma.tierPrice.count(args),
     ]);
     return pageResult(items, total, query);
@@ -343,7 +356,11 @@ export const couponAdminService = {
     };
 
     const [items, total] = await Promise.all([
-      prisma.coupon.findMany({ ...args, ...skipTake(query), orderBy: { createdAt: 'desc' } }),
+      prisma.coupon.findMany({
+        ...args,
+        ...skipTake(query),
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      }),
       prisma.coupon.count(args),
     ]);
     return pageResult(items, total, query);
@@ -378,7 +395,7 @@ export const couponAdminService = {
       },
     });
 
-    await touched();
+    await touchedCheckout();
     return coupon;
   },
 
@@ -393,14 +410,14 @@ export const couponAdminService = {
     if (appliesTo !== undefined) data.appliesToJson = appliesToColumn.serialize(appliesTo ?? null);
 
     await updateVersioned(prisma.coupon, 'Coupon', id, version, data);
-    await touched();
+    await touchedCheckout();
     return this.get(id);
   },
 
   async remove(id: string): Promise<void> {
     await this.get(id);
     await prisma.coupon.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } });
-    await touched();
+    await touchedCheckout();
   },
 
   /** Generates unique single-use style codes from a template, e.g. DIWALI-7F3K9QX2. */
@@ -438,7 +455,7 @@ export const couponAdminService = {
       codes.push(code);
     }
 
-    await touched();
+    await touchedCheckout();
     return codes;
   },
 };
@@ -486,7 +503,7 @@ export const discountRuleService = {
       },
     });
 
-    await touched();
+    await touchedCheckout();
     return rule;
   },
 
@@ -502,7 +519,7 @@ export const discountRuleService = {
     if (actions !== undefined) data.actionsJson = JSON.stringify(actions);
 
     await updateVersioned(prisma.discountRule, 'DiscountRule', id, version, data);
-    await touched();
+    await touchedCheckout();
     return this.get(id);
   },
 
@@ -512,7 +529,7 @@ export const discountRuleService = {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await touched();
+    await touchedCheckout();
   },
 };
 
@@ -529,7 +546,7 @@ export const shippingAdminService = {
       throw AppError.conflict('That zone code is already in use', { code: input.code });
 
     const zone = await prisma.shippingZone.create({ data: input });
-    await touched();
+    await touchedCheckout();
     return zone;
   },
 
@@ -542,7 +559,7 @@ export const shippingAdminService = {
     }
 
     await updateVersioned(prisma.shippingZone, 'ShippingZone', id, version, data);
-    await touched();
+    await touchedCheckout();
     return prisma.shippingZone.findUniqueOrThrow({ where: { id } });
   },
 
@@ -551,7 +568,7 @@ export const shippingAdminService = {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await touched();
+    await touchedCheckout();
   },
 
   rates(zoneId?: string): Promise<ShippingRate[]> {
@@ -573,7 +590,7 @@ export const shippingAdminService = {
         etaMaxDays: input.etaMaxDays ?? null,
       },
     });
-    await touched();
+    await touchedCheckout();
     return rate;
   },
 
@@ -586,7 +603,7 @@ export const shippingAdminService = {
     }
 
     await updateVersioned(prisma.shippingRate, 'ShippingRate', id, version, data);
-    await touched();
+    await touchedCheckout();
     return prisma.shippingRate.findUniqueOrThrow({ where: { id } });
   },
 
@@ -595,7 +612,7 @@ export const shippingAdminService = {
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
-    await touched();
+    await touchedCheckout();
   },
 
   pincodes(zoneId?: string) {
@@ -628,20 +645,20 @@ export const shippingAdminService = {
         etaMaxDays: input.etaMaxDays ?? null,
       },
     });
-    await touched();
+    await touchedCheckout();
     return row;
   },
 
   async removePincode(id: string): Promise<void> {
     await prisma.shippingPincode.delete({ where: { id } });
-    await touched();
+    await touchedCheckout();
   },
 
   async createRange(input: ShippingPincodeRangeCreateInput) {
     const row = await prisma.shippingPincodeRange.create({
       data: { ...input, stateCode: input.stateCode ?? null },
     });
-    await touched();
+    await touchedCheckout();
     return row;
   },
 
@@ -688,7 +705,7 @@ export const shippingAdminService = {
       imported += 1;
     }
 
-    await touched();
+    await touchedCheckout();
     return { imported, skipped };
   },
 };
@@ -731,7 +748,7 @@ export const pricingSettingsService = {
       });
     }
 
-    await touched();
+    await touchedCheckout();
     return this.read();
   },
 };
