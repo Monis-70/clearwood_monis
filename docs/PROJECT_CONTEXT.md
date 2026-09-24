@@ -2652,3 +2652,27 @@ holding products cannot become one (409 `CATEGORY_HAS_PRODUCTS`). The category t
 landing expose `kind` and `leadFormKey`, so the storefront opens the right form without naming a
 category. The enquiry limiter is keyed per client (rotating the typed email buys nothing).
 Enquiry notifications stay on hold with SMTP.
+
+## 49. The catalog chain on `clearwood_prod` (Prompt 8 deploy)
+
+Run ON the VPS (`/srv/clearwood`, commit `0e82ab3`), not through the tunnel: `migrate deploy` of the
+five catalog migrations took 32 s, a structural seed ~60 s.
+
+- **`backend/.env` pointed at `clearwood_db`** (an empty database). Only the database name was
+  changed to `clearwood_prod`; the pre-change file is kept in `~/clearwood-backups/env/`.
+  `clearwood_app@127.0.0.1` holds ALL on `clearwood_prod` only.
+- Backups (mysqldump, mode 600) in `~/clearwood-backups/db/`: before the migrations, and after the
+  seed. All six migrations applied, checksums match, drift against `schema.prisma` is empty.
+- The seed is create-only, so the 111 categories seeded by 17A kept their 17A labels ("Fabric",
+  "All", "Special Collection"); the four new groups and Contract Based Work were added. Positions
+  the new rows shared with old ones were set to the reviewed order through the admin API, and the
+  17A test leftover `catalog.default_page_size = 99` (above the max of 96, which made every
+  catalog-settings update fail validation) was set back to 24.
+- Verification ran against a temporary loopback-only production-mode instance with in-memory
+  secrets and temporary admin accounts; everything it created was removed, audit rows kept.
+- It found two search-index races, both fixed: concurrent upserts of one document (P2002) and
+  overlapping whole-family rebuilds pruning newer documents (`tests/concurrency-search-index.test.ts`).
+- Not on the VPS yet: PM2, Redis and sudo; the API is not running. `backend/.env` still has
+  `NODE_ENV=development` (PM2 sets production), placeholder secrets and the placeholder admin
+  email, so production cannot boot until the owner sets them (`npm run check:production`).
+- Seeded navigation items carry `menuColumn` values up to 14 while the admin API accepts 0-10.
