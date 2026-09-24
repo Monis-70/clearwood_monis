@@ -4,6 +4,7 @@ import type { SearchEntityType } from '@shared/enums';
 
 import { prisma } from '../config/prisma';
 import type { SearchDocumentInput } from '../drivers/search/search.driver';
+import { isUniqueViolation } from '../utils/prismaErrors';
 
 /**
  * R1 — the SQL search driver reads and writes its index through here, so Prisma stays confined to
@@ -132,12 +133,19 @@ export const searchDocumentRepository = {
 
   async upsert(doc: SearchDocumentInput): Promise<void> {
     const { entityType, entityId, locale, ...rest } = doc;
+    const where = { entityType_entityId_locale: { entityType, entityId, locale } };
 
-    await prisma.searchDocument.upsert({
-      where: { entityType_entityId_locale: { entityType, entityId, locale } },
-      create: { entityType, entityId, locale, ...rest, indexedAt: new Date() },
-      update: { ...rest, indexedAt: new Date() },
-    });
+    try {
+      await prisma.searchDocument.upsert({
+        where,
+        create: { entityType, entityId, locale, ...rest, indexedAt: new Date() },
+        update: { ...rest, indexedAt: new Date() },
+      });
+    } catch (error) {
+      // Prisma's MySQL upsert is read-then-insert: a concurrent indexer won the insert, so update it.
+      if (!isUniqueViolation(error, 'entityType_entityId_locale')) throw error;
+      await prisma.searchDocument.update({ where, data: { ...rest, indexedAt: new Date() } });
+    }
   },
 
   async remove(entityType: SearchEntityType, entityId: string): Promise<void> {
