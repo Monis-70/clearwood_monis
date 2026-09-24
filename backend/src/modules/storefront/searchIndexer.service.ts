@@ -136,6 +136,25 @@ export interface ReindexOutcome {
   errors: string[];
 }
 
+/** One whole-family rebuild at a time: an overlapping older snapshot would prune newer documents. */
+function oneAtATime(rebuild: () => Promise<number>): () => Promise<number> {
+  let tail: Promise<unknown> = Promise.resolve();
+  let queued: Promise<number> | null = null;
+
+  return () => {
+    if (queued) return queued;
+    const next = tail
+      .catch(() => undefined)
+      .then(() => {
+        queued = null;
+        return rebuild();
+      });
+    queued = next;
+    tail = next;
+    return next;
+  };
+}
+
 export const searchIndexerService = {
   async buildProductDocument(
     product: ProductForIndex,
@@ -228,7 +247,7 @@ export const searchIndexerService = {
     return written;
   },
 
-  async indexCategories(): Promise<number> {
+  indexCategories: oneAtATime(async (): Promise<number> => {
     const live = await categoryService.liveIds();
     const categories = (await storefrontRepository.findIndexableCategories()).filter((category) =>
       live.has(category.id),
@@ -259,14 +278,14 @@ export const searchIndexerService = {
     });
 
     const written = await search.indexMany(documents);
-    await this.pruneEntities(
+    await searchIndexerService.pruneEntities(
       'CATEGORY',
       categories.map((category) => category.id),
     );
     return written;
-  },
+  }),
 
-  async indexCollections(): Promise<number> {
+  indexCollections: oneAtATime(async (): Promise<number> => {
     const collections = await storefrontRepository.findIndexableCollections();
 
     const documents = collections.map((collection) => {
@@ -294,14 +313,14 @@ export const searchIndexerService = {
     });
 
     const written = await search.indexMany(documents);
-    await this.pruneEntities(
+    await searchIndexerService.pruneEntities(
       'COLLECTION',
       collections.map((collection) => collection.id),
     );
     return written;
-  },
+  }),
 
-  async indexBrands(): Promise<number> {
+  indexBrands: oneAtATime(async (): Promise<number> => {
     const brands = await storefrontRepository.findIndexableBrands();
 
     const documents = brands.map((brand) => {
@@ -329,12 +348,12 @@ export const searchIndexerService = {
     });
 
     const written = await search.indexMany(documents);
-    await this.pruneEntities(
+    await searchIndexerService.pruneEntities(
       'BRAND',
       brands.map((brand) => brand.id),
     );
     return written;
-  },
+  }),
 
   /** Removes the documents of one entity family that are no longer in `liveIds`. */
   async pruneEntities(
