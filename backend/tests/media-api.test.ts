@@ -3,6 +3,7 @@ import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createApp } from '../src/app';
+import { env } from '../src/config/env';
 import { prisma } from '../src/config/prisma';
 import { passwordService } from '../src/modules/auth/password.service';
 
@@ -171,6 +172,20 @@ describe('POST /api/v1/admin/media/upload', () => {
       .attach('files', await png(40, 40, '#B23B3B'), 'nocsrf.png');
 
     expect(response.status).toBe(403);
+  });
+
+  it('answers a file above MAX_UPLOAD_SIZE_MB with 413 FILE_TOO_LARGE, not a 500', async () => {
+    const oversized = Buffer.alloc(env.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1024);
+    (await png(8, 8, '#B4613A')).copy(oversized);
+
+    const response = await request(app)
+      .post('/api/v1/admin/media/upload')
+      .set('Cookie', catalogManager.header)
+      .set('X-CSRF-Token', catalogManager.csrf)
+      .attach('files', oversized, 'huge.png');
+
+    expect(response.status).toBe(413);
+    expect(response.body.error.code).toBe('FILE_TOO_LARGE');
   });
 });
 

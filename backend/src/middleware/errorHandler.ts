@@ -9,6 +9,7 @@ import { logger } from '../config/logger';
 import { AppError, isAppError } from '../utils/AppError';
 
 import { getRequestId } from './requestId';
+import { toUploadError } from './upload';
 
 interface NormalisedError {
   statusCode: number;
@@ -78,7 +79,9 @@ function fromPrismaKnownError(error: Prisma.PrismaClientKnownRequestError): Norm
   }
 }
 
-function normalise(error: unknown): NormalisedError {
+function normalise(raw: unknown): NormalisedError {
+  const error = toUploadError(raw);
+
   if (isAppError(error)) {
     return {
       statusCode: error.statusCode,
