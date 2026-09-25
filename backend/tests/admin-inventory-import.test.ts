@@ -425,6 +425,52 @@ describe('import / export', () => {
     expect(response.status).toBe(403);
   });
 
+  it('refuses a commit without any import permission before looking the job up', async () => {
+    const csv = [
+      'slug,name,parentSlug,kind,position,isActive,showInMenu,shortDescription,seoTitle,seoDescription',
+      `import-perm-${Date.now()},Permission Probe,,STANDARD,0,true,true,,,`,
+    ].join('\n');
+
+    const dryRun = await post(superAdmin, '/api/v1/admin/catalog/import/CATEGORY')
+      .field('dryRun', 'true')
+      .attach('files', Buffer.from(csv), 'categories.csv');
+    expect(dryRun.status).toBe(201);
+
+    // An existing job and a made-up id must be indistinguishable to someone with no import grant.
+    for (const id of [dryRun.body.data.id as string, 'cnosuchimportjob000000000']) {
+      const response = await post(
+        contentManager,
+        `/api/v1/admin/catalog/import/jobs/${id}/commit`,
+      ).attach('files', Buffer.from(csv), 'categories.csv');
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('FORBIDDEN');
+    }
+
+    const missing = await post(
+      superAdmin,
+      '/api/v1/admin/catalog/import/jobs/cnosuchimportjob000000000/commit',
+    ).attach('files', Buffer.from(csv), 'categories.csv');
+    expect(missing.status).toBe(404);
+  });
+
+  it('answers an unknown entity with 422, never a 500', async () => {
+    for (const role of [superAdmin, contentManager]) {
+      const imported = await post(role, '/api/v1/admin/catalog/import/NOT_AN_ENTITY')
+        .field('dryRun', 'true')
+        .attach('files', Buffer.from('a,b\n1,2'), 'x.csv');
+      expect(imported.status).toBe(422);
+      expect(imported.body.error.code).toBe('VALIDATION_ERROR');
+    }
+
+    for (const url of [
+      '/api/v1/admin/catalog/import/templates/NOT_AN_ENTITY',
+      '/api/v1/admin/catalog/export/NOT_AN_ENTITY',
+    ]) {
+      const response = await request(app).get(url).set('Cookie', superAdmin.header);
+      expect(response.status).toBe(422);
+    }
+  });
+
   it('moves imported stock through the ledger', async () => {
     const variant = await freshVariant();
     const csv = [

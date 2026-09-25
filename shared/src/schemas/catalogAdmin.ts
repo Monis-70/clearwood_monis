@@ -46,6 +46,7 @@ import {
 
 export const bulkActionTypeSchema = z.enum(BULK_ACTION_TYPES);
 export const importEntitySchema = z.enum(IMPORT_ENTITIES);
+export const importEntityParamSchema = z.object({ entity: importEntitySchema });
 export const importStatusSchema = z.enum(IMPORT_STATUSES);
 export const inventoryReasonSchema = z.enum(INVENTORY_REASONS);
 export const productRelationTypeSchema = z.enum(PRODUCT_RELATION_TYPES);

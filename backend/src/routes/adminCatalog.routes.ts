@@ -26,6 +26,7 @@ import {
   collectionProductsSchema,
   collectionUpdateSchema,
   exportQuerySchema,
+  importEntityParamSchema,
   importJobListQuerySchema,
   inventoryAdjustSchema,
   inventoryBulkAdjustSchema,
@@ -1218,7 +1219,7 @@ adminCatalogRouter.get(
   authenticate('ADMIN'),
   requirePermission('catalog.product.export'),
   authRateLimit('catalog-export'),
-  validate({ query: exportQuerySchema }),
+  validate({ params: importEntityParamSchema, query: exportQuerySchema }),
   asyncHandler(adminImportExportController.export),
 );
 
@@ -1226,6 +1227,7 @@ adminCatalogRouter.get(
   '/catalog/import/templates/:entity',
   authenticate('ADMIN'),
   requirePermission('catalog.product.import'),
+  validate({ params: importEntityParamSchema }),
   adminImportExportController.template,
 );
 
@@ -1259,6 +1261,7 @@ adminCatalogRouter.post(
   '/catalog/import/:entity',
   ...guard,
   authRateLimit('catalog-import'),
+  validate({ params: importEntityParamSchema }),
   uploadMiddleware.array('files'),
   asyncHandler(adminImportExportController.import),
 );

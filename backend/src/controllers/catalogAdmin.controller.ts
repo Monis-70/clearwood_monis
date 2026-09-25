@@ -1060,6 +1060,7 @@ export const adminImportExportController = {
   async commit(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
 
+    importService.assertAnyImportAllowed(req.auth?.permissions ?? []);
     const existing = await importService.get(id);
     importService.assertImportAllowed(existing.entity, req.auth?.permissions ?? []);
 

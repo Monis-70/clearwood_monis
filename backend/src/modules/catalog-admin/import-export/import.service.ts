@@ -80,6 +80,17 @@ export function assertImportAllowed(entity: ImportEntity, granted: readonly stri
   }
 }
 
+/** Gate for routes that only learn the entity after a lookup: no import grant, no lookup. */
+export function assertAnyImportAllowed(granted: readonly string[]): void {
+  const allowed = Object.values(IMPORT_PERMISSIONS).some((required) =>
+    required.every((permission) => granted.includes(permission)),
+  );
+
+  if (!allowed) {
+    throw AppError.forbidden('Importing requires an import permission');
+  }
+}
+
 interface ParsedRow {
   row: number;
   data: Record<string, string>;
@@ -1022,6 +1033,7 @@ async function announceImport(entity: ImportEntity, touched: Touched): Promise<v
 
 export const importService = {
   assertImportAllowed,
+  assertAnyImportAllowed,
   toDto,
 
   /** Parses and validates a file, writing nothing when `dryRun` is true. */
