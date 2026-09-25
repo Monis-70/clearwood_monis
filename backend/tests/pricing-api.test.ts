@@ -550,6 +550,28 @@ describe('admin pricing CRUD and RBAC', () => {
     expect(removed.status).toBe(200);
   });
 
+  it('creates a coupon scoped with appliesTo and stores the scope as JSON', async () => {
+    const code = `TESTSCOPE${Date.now()}`;
+
+    const created = await as(superAdmin)
+      .post('/api/v1/admin/pricing/coupons')
+      .send({
+        code,
+        name: 'Scoped test',
+        type: 'PERCENT',
+        valueBp: 1000,
+        appliesTo: { productIds: ['cscopedproduct0000000000'] },
+      });
+
+    expect(created.status).toBe(201);
+    const row = await prisma.coupon.findUniqueOrThrow({ where: { id: created.body.data.id } });
+    expect(JSON.parse(row.appliesToJson ?? 'null')).toEqual({
+      productIds: ['cscopedproduct0000000000'],
+    });
+
+    await as(superAdmin).delete(`/api/v1/admin/pricing/coupons/${created.body.data.id}`);
+  });
+
   it('bulk-generates unique codes', async () => {
     const response = await as(superAdmin)
       .post('/api/v1/admin/pricing/coupons/bulk-generate')
@@ -564,6 +586,32 @@ describe('admin pricing CRUD and RBAC', () => {
     expect(codes).toHaveLength(5);
     expect(new Set(codes).size).toBe(5);
     expect(codes.every((code) => code.startsWith('GEN'))).toBe(true);
+  });
+
+  it('bulk-generates codes from a template scoped with appliesTo', async () => {
+    const response = await as(superAdmin)
+      .post('/api/v1/admin/pricing/coupons/bulk-generate')
+      .send({
+        prefix: 'SCOPE',
+        count: 2,
+        template: {
+          name: 'Generated scoped',
+          type: 'PERCENT',
+          valueBp: 500,
+          appliesTo: { productIds: ['cscopedproduct0000000000'] },
+        },
+      });
+
+    expect(response.status).toBe(201);
+    const rows = await prisma.coupon.findMany({
+      where: { code: { in: response.body.data.codes as string[] } },
+    });
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(JSON.parse(row.appliesToJson ?? 'null')).toEqual({
+        productIds: ['cscopedproduct0000000000'],
+      });
+    }
   });
 
   it('reads and writes the pricing settings', async () => {

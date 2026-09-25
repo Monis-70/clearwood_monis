@@ -377,9 +377,10 @@ export const couponAdminService = {
     const clash = await prisma.coupon.count({ where: { code } });
     if (clash > 0) throw AppError.conflict('That coupon code already exists', { code });
 
+    const { appliesTo, ...rest } = input;
     const coupon = await prisma.coupon.create({
       data: {
-        ...input,
+        ...rest,
         code,
         valueBp: input.valueBp ?? null,
         valuePaise: input.valuePaise ?? null,
@@ -389,7 +390,7 @@ export const couponAdminService = {
         perCustomerLimit: input.perCustomerLimit ?? null,
         startsAt: input.startsAt ?? null,
         endsAt: input.endsAt ?? null,
-        appliesToJson: appliesToColumn.serialize(input.appliesTo ?? null),
+        appliesToJson: appliesToColumn.serialize(appliesTo ?? null),
         description: input.description ?? null,
         termsText: input.termsText ?? null,
       },
@@ -435,9 +436,10 @@ export const couponAdminService = {
       if (codes.includes(code)) continue;
       if ((await prisma.coupon.count({ where: { code } })) > 0) continue;
 
+      const { appliesTo, ...template } = input.template;
       await prisma.coupon.create({
         data: {
-          ...input.template,
+          ...template,
           code,
           valueBp: input.template.valueBp ?? null,
           valuePaise: input.template.valuePaise ?? null,
@@ -447,7 +449,7 @@ export const couponAdminService = {
           perCustomerLimit: input.template.perCustomerLimit ?? null,
           startsAt: input.template.startsAt ?? null,
           endsAt: input.template.endsAt ?? null,
-          appliesToJson: appliesToColumn.serialize(input.template.appliesTo ?? null),
+          appliesToJson: appliesToColumn.serialize(appliesTo ?? null),
           description: input.template.description ?? null,
           termsText: input.template.termsText ?? null,
         },
