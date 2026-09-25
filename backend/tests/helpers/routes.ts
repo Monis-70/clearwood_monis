@@ -31,14 +31,19 @@ function mountPrefix(layer: Layer): string {
 
 /** `GET /api/v1/orders/{id}` for every mounted route, path params normalised to OpenAPI style. */
 export function mountedRoutes(app: Express): string[] {
-  const found = new Set<string>();
+  return [...new Set(routeRegistrations(app))].sort();
+}
+
+/** Every registration, duplicates kept: a second registration of one route is dead code. */
+export function routeRegistrations(app: Express): string[] {
+  const found: string[] = [];
 
   const walk = (stack: Layer[], prefix: string): void => {
     for (const layer of stack) {
       if (layer.route) {
         for (const method of Object.keys(layer.route.methods)) {
           if (method === '_all') continue;
-          found.add(normalise(`${method.toUpperCase()} ${prefix}${layer.route.path}`));
+          found.push(normalise(`${method.toUpperCase()} ${prefix}${layer.route.path}`));
         }
         continue;
       }
@@ -52,7 +57,7 @@ export function mountedRoutes(app: Express): string[] {
   const root = app as unknown as { _router?: { stack: Layer[] }; router?: { stack: Layer[] } };
   walk(root._router?.stack ?? root.router?.stack ?? [], '');
 
-  return [...found].sort();
+  return found;
 }
 
 export function normalise(route: string): string {

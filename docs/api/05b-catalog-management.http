@@ -170,3 +170,7 @@ Content-Type: application/json
 X-CSRF-Token: {{csrf}}
 
 { "status": "CONTACTED", "adminNote": "Site visit booked", "version": 0 }
+
+### 20. Who it can be assigned to (lead.enquiry.assign): active admins who can read enquiries,
+###     id and name only. PATCH refuses any other assignedToId with 422.
+GET {{api}}/admin/enquiries/assignees

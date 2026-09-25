@@ -24,7 +24,14 @@ import {
   publicFaqController,
   publicHelpController,
 } from '../controllers/faq.controller';
-import { commonErrorResponses, jsonContent, registry, successBodySchema, z } from '../docs/registry';
+import {
+  commonErrorResponses,
+  jsonContent,
+  nullDataResponse,
+  registry,
+  successBodySchema,
+  z,
+} from '../docs/registry';
 import { asyncHandler, authenticate, requirePermission, validate } from '../middleware';
 import { csrfProtection } from '../modules/auth/csrf.service';
 
@@ -183,8 +190,9 @@ for (const entry of [
     request: { ...('body' in entry && entry.body ? { body: jsonContent(entry.body, 'Payload') } : {}) },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(z.array(anyObject)), 'Items'),
-      201: jsonContent(successBodySchema(anyObject), 'Created'),
+      ...(entry.method === 'post'
+        ? { 201: jsonContent(successBodySchema(anyObject), 'Created') }
+        : { 200: jsonContent(successBodySchema(z.array(anyObject)), 'Items') }),
     },
   });
 }
@@ -230,8 +238,10 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(anyObject), 'Item'),
-      204: { description: 'Deleted' },
+      200:
+        entry.method === 'delete'
+          ? nullDataResponse
+          : jsonContent(successBodySchema(anyObject), 'Item'),
     },
   });
 }
@@ -244,7 +254,7 @@ for (const path of ['/cms/faqs/reorder', '/cms/help/articles/reorder']) {
     summary: `Admin: reorder ${path.includes('help') ? 'help articles' : 'FAQs'}`,
     security: [{ adminBearer: [] }],
     request: { body: jsonContent(cmsReorderSchema, 'Order') },
-    responses: { ...commonErrorResponses, 204: { description: 'Reordered' } },
+    responses: { ...commonErrorResponses, 200: nullDataResponse },
   });
 }
 

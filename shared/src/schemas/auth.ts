@@ -67,6 +67,15 @@ export const opaqueTokenSchema = z
 
 export const displayNameSchema = z.string().trim().min(2).max(120);
 
+/** A seeded or custom role code; whether it exists, is active and may be granted is the service's call. */
+export const roleCodeSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .min(3)
+  .max(40)
+  .regex(/^[A-Z][A-Z0-9_]*$/, 'code must be UPPER_SNAKE_CASE');
+
 /* ----------------------------------------------------------- admin realm */
 
 export const adminLoginSchema = z.object({
@@ -108,7 +117,7 @@ export const adminUserCreateSchema = z.object({
   phone: phoneSchema.optional(),
   /** Omitted => the user is INVITED and receives a set-password link. */
   password: passwordSchema.optional(),
-  roleCodes: z.array(adminRoleCodeSchema).min(1),
+  roleCodes: z.array(roleCodeSchema).min(1),
 });
 export type AdminUserCreateInput = z.infer<typeof adminUserCreateSchema>;
 
@@ -127,17 +136,15 @@ export const adminUserListQuerySchema = listQuerySchema.extend({
 });
 export type AdminUserListQuery = z.infer<typeof adminUserListQuerySchema>;
 
-export const assignRolesSchema = z.object({ roleCodes: z.array(adminRoleCodeSchema).min(1) });
+export const assignRolesSchema = z.object({ roleCodes: z.array(roleCodeSchema).min(1) });
 export type AssignRolesInput = z.infer<typeof assignRolesSchema>;
 
+/** Another admin's password, set by someone allowed to manage them; they must change it at sign-in. */
+export const adminPasswordSetSchema = z.object({ newPassword: passwordSchema });
+export type AdminPasswordSetInput = z.infer<typeof adminPasswordSetSchema>;
+
 export const roleCreateSchema = z.object({
-  code: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .min(3)
-    .max(40)
-    .regex(/^[A-Z][A-Z0-9_]*$/, 'code must be UPPER_SNAKE_CASE'),
+  code: roleCodeSchema,
   name: displayNameSchema,
   description: z.string().trim().max(400).optional(),
   position: z.number().int().min(0).max(999).optional(),

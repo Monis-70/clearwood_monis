@@ -32,6 +32,10 @@ export const adminEnquiryController = {
     ok(res, await enquiryService.get((req.params as unknown as IdParam).id));
   },
 
+  async assignees(_req: Request, res: Response): Promise<void> {
+    ok(res, await enquiryService.listAssignees());
+  },
+
   async update(req: Request, res: Response): Promise<void> {
     const { id } = req.params as unknown as IdParam;
     const input = req.body as EnquiryUpdateInput;

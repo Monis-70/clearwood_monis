@@ -182,6 +182,22 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: 'get',
+  path: path('/catalog/categories'),
+  tags: ['Admin catalog'],
+  summary: 'List categories (paginated, filterable)',
+  description:
+    'Flat and paginated; `includeDeleted=true` adds soft-deleted rows. Use /tree for the hierarchy.',
+  request: { query: categoryListQuerySchema },
+  responses: {
+    200: jsonContent(successBodySchema(z.array(adminCategorySchema)), 'Categories (paginated)'),
+    ...unauthorised,
+    ...forbidden,
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
   method: 'post',
   path: path('/catalog/categories'),
   tags: ['Admin catalog'],

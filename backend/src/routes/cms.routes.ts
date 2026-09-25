@@ -31,6 +31,7 @@ import {
 import {
   commonErrorResponses,
   jsonContent,
+  nullDataResponse,
   registry,
   successBodySchema,
   z,
@@ -229,8 +230,9 @@ for (const entry of pagePaths) {
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(z.array(adminPageSchema)), 'Pages'),
-      201: jsonContent(successBodySchema(adminPageSchema), 'Created'),
+      ...(entry.method === 'post'
+        ? { 201: jsonContent(successBodySchema(adminPageSchema), 'Created') }
+        : { 200: jsonContent(successBodySchema(z.array(adminPageSchema)), 'Pages') }),
     },
   });
 }
@@ -252,8 +254,10 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(adminPageSchema), 'Page'),
-      204: { description: 'Deleted' },
+      200:
+        entry.method === 'delete'
+          ? nullDataResponse
+          : jsonContent(successBodySchema(adminPageSchema), 'Page'),
     },
   });
 }
@@ -262,9 +266,14 @@ for (const entry of [
   { path: '/cms/pages/{id}/publish', summary: 'Admin: publish a page', body: undefined },
   { path: '/cms/pages/{id}/unpublish', summary: 'Admin: unpublish a page', body: undefined },
   { path: '/cms/pages/{id}/schedule', summary: 'Admin: schedule a page', body: pageScheduleSchema },
-  { path: '/cms/pages/{id}/duplicate', summary: 'Admin: duplicate a page', body: pageDuplicateSchema },
+  {
+    path: '/cms/pages/{id}/duplicate',
+    summary: 'Admin: duplicate a page',
+    body: pageDuplicateSchema,
+    created: true,
+  },
   { path: '/cms/pages/{id}/preview', summary: 'Admin: render a page including drafts', body: undefined },
-  { path: '/cms/pages/{id}/blocks', summary: 'Admin: add a block', body: blockCreateSchema },
+  { path: '/cms/pages/{id}/blocks', summary: 'Admin: add a block', body: blockCreateSchema, created: true },
   { path: '/cms/pages/{id}/blocks/reorder', summary: 'Admin: reorder blocks', body: blockReorderSchema },
 ]) {
   registry.registerPath({
@@ -283,8 +292,11 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(adminPageSchema), 'Page'),
-      201: jsonContent(successBodySchema(adminPageSchema), 'Created'),
+      ...('created' in entry && entry.created
+        ? { 201: jsonContent(successBodySchema(adminPageSchema), 'Created') }
+        : entry.path.endsWith('/preview')
+          ? { 200: jsonContent(successBodySchema(renderedPageSchema), 'Rendered page') }
+          : { 200: jsonContent(successBodySchema(adminPageSchema), 'Page') }),
     },
   });
 }
@@ -360,8 +372,9 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(z.array(bannerSchema)), 'Items'),
-      201: jsonContent(successBodySchema(bannerSchema), 'Created'),
+      ...(entry.method === 'post'
+        ? { 201: jsonContent(successBodySchema(bannerSchema), 'Created') }
+        : { 200: jsonContent(successBodySchema(z.array(bannerSchema)), 'Items') }),
     },
   });
 }
@@ -390,8 +403,12 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(bannerSchema), 'Item'),
-      204: { description: 'Deleted' },
+      200:
+        entry.method === 'delete'
+          ? nullDataResponse
+          : entry.path.endsWith('/stats')
+            ? jsonContent(successBodySchema(anyObject), 'Impressions and clicks')
+            : jsonContent(successBodySchema(bannerSchema), 'Item'),
     },
   });
 }
@@ -403,7 +420,7 @@ registry.registerPath({
   summary: 'Admin: reorder banners',
   security: [{ adminBearer: [] }],
   request: { body: jsonContent(cmsReorderSchema, 'Order') },
-  responses: { ...commonErrorResponses, 204: { description: 'Reordered' } },
+  responses: { ...commonErrorResponses, 200: nullDataResponse },
 });
 
 /* --------------------------------------------------------------- routes */

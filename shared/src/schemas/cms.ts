@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { NAVIGATION_MENU_COLUMN_MAX } from '../constants';
 import {
   BANNER_PLACEMENTS,
   BLOCK_TYPES,
@@ -10,7 +11,7 @@ import {
   PAGE_STATUSES,
   PAGE_TYPES,
 } from '../enums';
-import { listQuerySchema } from './common';
+import { booleanQuerySchema, listQuerySchema } from './common';
 
 /* ------------------------------------------------------------------ pages */
 
@@ -163,7 +164,7 @@ export type BannerUpdateInput = z.infer<typeof bannerUpdateSchema>;
 
 export const bannerListQuerySchema = listQuerySchema.extend({
   placement: z.enum(BANNER_PLACEMENTS).optional(),
-  isActive: z.coerce.boolean().optional(),
+  isActive: booleanQuerySchema.optional(),
 });
 export type BannerListQuery = z.infer<typeof bannerListQuerySchema>;
 
@@ -407,7 +408,7 @@ export const navigationItemCreateSchema = z
     leadFormKey: z.string().trim().max(60).nullish(),
     pageSlug: slug.nullish(),
     iconMediaId: z.string().max(40).nullish(),
-    menuColumn: z.number().int().min(0).max(10).nullish(),
+    menuColumn: z.number().int().min(0).max(NAVIGATION_MENU_COLUMN_MAX).nullish(),
     openInNewTab: z.boolean().default(false),
   })
   .strict();

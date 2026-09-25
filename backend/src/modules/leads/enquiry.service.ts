@@ -144,6 +144,11 @@ export const enquiryService = {
     };
   },
 
+  /** Who an enquiry may be given to - names only, so assigning never needs system.user.read. */
+  listAssignees(): Promise<{ id: string; name: string }[]> {
+    return enquiryRepository.findAssignableAdmins();
+  },
+
   /** `canAssign`: the caller holds lead.enquiry.assign, which moving the owner requires. */
   async update(
     id: string,
@@ -158,7 +163,7 @@ export const enquiryService = {
       });
     }
     if (input.assignedToId && !(await enquiryRepository.findActiveAdmin(input.assignedToId))) {
-      throw AppError.validation('Unknown or inactive admin user', {
+      throw AppError.validation('Assign enquiries to an active admin who can read them', {
         assignedToId: input.assignedToId,
       });
     }

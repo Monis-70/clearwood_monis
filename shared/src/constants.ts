@@ -147,6 +147,9 @@ export const SYSTEM_MEDIA_FOLDERS = [
 /** Longest edge of a stored original; anything larger is downscaled on upload. */
 export const MAX_MEDIA_DEPTH = 4;
 
+/** The widest mega-menu the storefront lays out; navigation items may use columns 0..this. */
+export const NAVIGATION_MENU_COLUMN_MAX = 10;
+
 /**
  * The 36 Indian states and union territories with their GST state codes.
  *

@@ -34,6 +34,9 @@ export function jsonContent<T extends z.ZodTypeAny>(schema: T, description: stri
   return { description, content: { 'application/json': { schema } } };
 }
 
+/** What `noContent()` sends: 200, the success envelope and `data: null` - never a bare 204. */
+export const nullDataResponse = jsonContent(successBodySchema(z.null()), 'Done (data is null)');
+
 /** Attached to every registered path so the error envelope is documented once. */
 export const commonErrorResponses = {
   422: jsonContent(errorBodySchema, 'Validation failed'),

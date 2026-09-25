@@ -41,6 +41,11 @@ async function loadRoles(codes: string[]): Promise<RoleWithPermissions[]> {
   const roles = await Promise.all(codes.map((code) => roleRepository.findByCode(code)));
   const missing = codes.filter((_, index) => !roles[index]);
   if (missing.length > 0) throw AppError.validation('Unknown role', { roleCodes: missing });
+
+  // An inactive role confers nothing, so granting one would only look like it worked.
+  const inactive = codes.filter((_, index) => roles[index]?.isActive === false);
+  if (inactive.length > 0) throw AppError.validation('Inactive role', { roleCodes: inactive });
+
   return roles as RoleWithPermissions[];
 }
 
@@ -126,7 +131,10 @@ export const adminUserService = {
     return toAdminUserDto(user);
   },
 
-  /** Without a password the user is INVITED and receives a single-use set-password token. */
+  /**
+   * Without a password the user is INVITED and receives a single-use set-password token. A password
+   * chosen by the creator is known to two people, so its owner must replace it at first sign-in.
+   */
   async create(req: Request, input: AdminUserCreateInput): Promise<AdminUserDto> {
     const existing = await adminUserRepository.findByEmail(input.email);
     if (existing) throw AppError.conflict('An admin with that email already exists');
@@ -153,7 +161,7 @@ export const adminUserService = {
           phone: input.phone ?? null,
           passwordHash,
           status: input.password ? 'ACTIVE' : 'INVITED',
-          mustChangePassword: !input.password,
+          mustChangePassword: true,
           invitedById: actorId,
           invitedAt: new Date(),
         },
@@ -273,6 +281,62 @@ export const adminUserService = {
       severity: 'WARNING',
       meta: { email: existing.email },
     });
+  },
+
+  /**
+   * Sets another admin's password (the SMTP reset flow is on hold). Same rule as every other change
+   * to an account: only someone who holds everything the target holds, so only a SUPER_ADMIN can do
+   * it to a SUPER_ADMIN. Every session of the target ends and they must choose a new password.
+   */
+  async setPassword(req: Request, id: string, newPassword: string): Promise<AdminUserDto> {
+    if (req.auth?.principalId === id) {
+      throw AppError.forbidden('Use change-password to change your own password');
+    }
+
+    const actor = await actorPrivilege(req);
+    const current = await adminUserRepository.findById(id);
+    if (!current) throw AppError.notFound('Admin user not found', { id });
+
+    passwordService.assertPolicy(newPassword, { email: current.email, phone: current.phone });
+    const passwordHash = await passwordService.hash(newPassword);
+
+    const target = await underSuperAdminLock(async (tx) => {
+      const target = await adminUserRepository.findById(id, tx);
+      if (!target) throw AppError.notFound('Admin user not found', { id });
+
+      await assertManageable(req, actor, target, tx);
+
+      await adminUserRepository.update(
+        id,
+        {
+          passwordHash,
+          passwordChangedAt: new Date(),
+          mustChangePassword: true,
+          failedLoginCount: 0,
+          lockedUntil: null,
+          ...(target.status === 'INVITED' ? { status: 'ACTIVE' } : {}),
+        },
+        tx,
+      );
+      // Live access tokens carry the permission version; bumping it ends them now, not in 15 min.
+      await rbacService.invalidateFor(id, tx);
+
+      return target;
+    });
+
+    await tokenService.revokeAllForPrincipal('ADMIN_USER', id, 'PASSWORD_SET_BY_ADMIN');
+    await verificationTokenRepository.invalidateOutstanding('ADMIN_USER', id, 'PASSWORD_RESET');
+    await verificationTokenRepository.invalidateOutstanding('ADMIN_USER', id, 'ADMIN_INVITE');
+
+    void auditService.recordFromRequest(req, {
+      action: 'PASSWORD_RESET',
+      entity: 'AdminUser',
+      entityId: id,
+      severity: 'CRITICAL',
+      meta: { stage: 'SET_BY_ADMIN', email: target.email },
+    });
+
+    return this.get(id);
   },
 
   /** Replaces the whole role set; every live access token for that user dies immediately. */

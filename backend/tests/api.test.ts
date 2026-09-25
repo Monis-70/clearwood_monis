@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import openapiDebt from '../../docs/openapi-debt.json';
 import { createApp } from '../src/app';
 
-import { mountedRoutes, normalise } from './helpers/routes';
+import { mountedRoutes, normalise, routeRegistrations } from './helpers/routes';
 
 const app = createApp();
 
@@ -144,6 +144,7 @@ describe('OpenAPI (R7)', () => {
       '/api/v1/admin/content/settings',
       '/api/v1/admin/documents/{documentNumber}/download',
       '/api/v1/admin/enquiries',
+      '/api/v1/admin/enquiries/assignees',
       '/api/v1/admin/enquiries/{id}',
       '/api/v1/admin/media',
       '/api/v1/admin/media-folders',
@@ -199,6 +200,7 @@ describe('OpenAPI (R7)', () => {
       '/api/v1/admin/returns/{returnNumber}/receive',
       '/api/v1/admin/returns/{returnNumber}/reject',
       '/api/v1/admin/roles',
+      '/api/v1/admin/roles/{id}',
       '/api/v1/admin/search/analytics',
       '/api/v1/admin/search/jobs/{id}',
       '/api/v1/admin/search/reindex',
@@ -213,6 +215,7 @@ describe('OpenAPI (R7)', () => {
       '/api/v1/admin/shipments/{shipmentNumber}/status',
       '/api/v1/admin/shipments/{shipmentNumber}/sync',
       '/api/v1/admin/users',
+      '/api/v1/admin/users/{id}/password',
       '/api/v1/admin/webhooks',
       '/api/v1/admin/webhooks/{id}/replay',
       '/api/v1/admin/wishlists/stats',
@@ -374,5 +377,18 @@ describe('OpenAPI (R7)', () => {
 
     expect(response.status).toBe(200);
     expect(response.text).toContain('ClearWood Furnitures API docs');
+  });
+});
+
+describe('route registrations', () => {
+  it('registers every method and path exactly once', () => {
+    const registrations = routeRegistrations(app);
+    expect(registrations.length).toBeGreaterThan(200);
+
+    // Express runs the first match, so a second registration is unreachable code.
+    const seen = new Set<string>();
+    const duplicates = registrations.filter((route) => seen.has(route) || !seen.add(route));
+
+    expect(duplicates).toEqual([]);
   });
 });

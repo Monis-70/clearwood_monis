@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { API_PREFIX } from '@shared/constants';
 import {
   adminLoginSchema,
+  adminPasswordSetSchema,
   adminUserCreateSchema,
   adminUserListQuerySchema,
   adminUserUpdateSchema,
@@ -16,7 +17,6 @@ import {
   roleUpdateSchema,
   sessionListQuerySchema,
 } from '@shared/schemas/auth';
-import { categoryTreeQuerySchema } from '@shared/schemas/catalog';
 import { idParamSchema } from '@shared/schemas/common';
 
 import {
@@ -248,6 +248,45 @@ registry.registerPath({
 
 registry.registerPath({
   method: 'get',
+  path: path('/roles/{id}'),
+  tags: ['Admin management'],
+  summary: 'One role with the permission codes it grants',
+  description: 'Requires `system.role.read`.',
+  request: { params: idParamSchema },
+  responses: {
+    200: jsonContent(successBodySchema(roleSchema), 'Role, `permissions` included'),
+    ...unauthorised,
+    ...forbidden,
+    404: jsonContent(errorBodySchema, 'No such role'),
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'post',
+  path: path('/users/{id}/password'),
+  tags: ['Admin management'],
+  summary: "Set another admin's password",
+  description:
+    'Requires `system.user.update` and holding every permission the target holds (so only a ' +
+    'SUPER_ADMIN can set a SUPER_ADMIN\u2019s password). Not for your own account \u2014 use ' +
+    '/auth/change-password. Ends all of the target\u2019s sessions and requires them to choose a ' +
+    'new password at sign-in. Audited as CRITICAL.',
+  request: {
+    params: idParamSchema,
+    body: jsonContent(adminPasswordSetSchema, 'The new password (password policy applies)'),
+  },
+  responses: {
+    200: jsonContent(successBodySchema(adminUserSchema), 'Updated admin user'),
+    ...unauthorised,
+    ...forbidden,
+    404: jsonContent(errorBodySchema, 'No such admin user'),
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'get',
   path: path('/permissions'),
   tags: ['Admin management'],
   summary: 'The permission registry, grouped for the UI',
@@ -269,26 +308,6 @@ registry.registerPath({
   request: { query: auditLogQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(z.array(auditLogSchema)), 'Audit entries (paginated)'),
-    ...unauthorised,
-    ...forbidden,
-    ...commonErrorResponses,
-  },
-});
-
-registry.registerPath({
-  method: 'get',
-  path: path('/catalog/categories'),
-  tags: ['Admin management'],
-  summary: 'Category tree for the admin panel',
-  description:
-    'Reuses the Prompt 2 category service behind `authenticate(ADMIN)` + ' +
-    '`requirePermission(catalog.category.read)` — this is the end-to-end guard-chain proof.',
-  request: { query: categoryTreeQuerySchema },
-  responses: {
-    200: jsonContent(
-      successBodySchema(z.array(z.record(z.any()))),
-      'Category tree (inactive included)',
-    ),
     ...unauthorised,
     ...forbidden,
     ...commonErrorResponses,
@@ -410,11 +429,27 @@ adminRouter.post(
   asyncHandler(adminManagementController.assignRoles),
 );
 
+adminRouter.post(
+  '/users/:id/password',
+  ...guard,
+  requirePermission('system.user.update'),
+  validate({ params: idParamSchema, body: adminPasswordSetSchema }),
+  asyncHandler(adminManagementController.setPassword),
+);
+
 adminRouter.get(
   '/roles',
   authenticate('ADMIN'),
   requirePermission('system.role.read'),
   asyncHandler(adminManagementController.listRoles),
+);
+
+adminRouter.get(
+  '/roles/:id',
+  authenticate('ADMIN'),
+  requirePermission('system.role.read'),
+  validate({ params: idParamSchema }),
+  asyncHandler(adminManagementController.getRole),
 );
 
 adminRouter.post(
@@ -454,14 +489,4 @@ adminRouter.get(
   requirePermission('system.audit.read'),
   validate({ query: auditLogQuerySchema }),
   asyncHandler(adminManagementController.listAuditLogs),
-);
-
-/* --------------------------------------------- guard-chain proof (Prompt 5 owns real CRUD) */
-
-adminRouter.get(
-  '/catalog/categories',
-  authenticate('ADMIN'),
-  requirePermission('catalog.category.read'),
-  validate({ query: categoryTreeQuerySchema }),
-  asyncHandler(adminManagementController.categories),
 );

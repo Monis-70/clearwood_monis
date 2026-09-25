@@ -1,3 +1,5 @@
+import type { Permission } from '@shared/enums';
+
 import { csvRow, paiseToCsv } from '../catalog-admin/import-export/csv';
 import {
   reportRepository,
@@ -27,6 +29,16 @@ export const REPORT_KINDS = [
   'INVENTORY_MOVEMENT',
 ] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
+
+/** Each report needs the privilege for the data it exposes; a report is an export of that data. */
+export const REPORT_PERMISSIONS: Record<ReportKind, Permission> = {
+  SALES_SUMMARY: 'order.order.export',
+  GST_HSN_SUMMARY: 'order.order.export',
+  TOP_PRODUCTS: 'order.order.export',
+  REFUND_SUMMARY: 'order.refund.read',
+  SPLIT_PAYOUT: 'payment.split.read',
+  INVENTORY_MOVEMENT: 'catalog.inventory.read',
+};
 
 export interface ReportResult {
   kind: ReportKind;

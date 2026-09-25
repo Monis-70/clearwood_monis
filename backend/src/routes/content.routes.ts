@@ -21,7 +21,14 @@ import {
   adminTestimonialController,
   publicContentController,
 } from '../controllers/content.controller';
-import { commonErrorResponses, jsonContent, registry, successBodySchema, z } from '../docs/registry';
+import {
+  commonErrorResponses,
+  jsonContent,
+  nullDataResponse,
+  registry,
+  successBodySchema,
+  z,
+} from '../docs/registry';
 import { asyncHandler, authenticate, requirePermission, validate } from '../middleware';
 import { csrfProtection } from '../modules/auth/csrf.service';
 
@@ -60,16 +67,23 @@ registry.registerPath({
 });
 
 for (const entry of [
-  { method: 'get' as const, path: '/cms/testimonials', summary: 'Admin: list testimonials' },
+  { method: 'get' as const, path: '/cms/testimonials', summary: 'Admin: list testimonials', list: true },
   {
     method: 'post' as const,
     path: '/cms/testimonials',
     summary: 'Admin: create a testimonial',
     body: testimonialCreateSchema,
+    created: true,
   },
-  { method: 'get' as const, path: '/cms/stores', summary: 'Admin: list stores' },
-  { method: 'post' as const, path: '/cms/stores', summary: 'Admin: create a store', body: storeCreateSchema },
-  { method: 'get' as const, path: '/navigation', summary: 'Admin: list navigation menus' },
+  { method: 'get' as const, path: '/cms/stores', summary: 'Admin: list stores', list: true },
+  {
+    method: 'post' as const,
+    path: '/cms/stores',
+    summary: 'Admin: create a store',
+    body: storeCreateSchema,
+    created: true,
+  },
+  { method: 'get' as const, path: '/navigation', summary: 'Admin: list navigation menus', list: true },
   { method: 'get' as const, path: '/content/settings', summary: 'Admin: read the content settings' },
   {
     method: 'put' as const,
@@ -88,8 +102,11 @@ for (const entry of [
     request: { ...('body' in entry && entry.body ? { body: jsonContent(entry.body, 'Payload') } : {}) },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(anyObject), 'Result'),
-      201: jsonContent(successBodySchema(anyObject), 'Created'),
+      ...('created' in entry && entry.created
+        ? { 201: jsonContent(successBodySchema(anyObject), 'Created') }
+        : 'list' in entry && entry.list
+          ? { 200: jsonContent(successBodySchema(z.array(anyObject)), 'Items') }
+          : { 200: jsonContent(successBodySchema(anyObject), 'Result') }),
     },
   });
 }
@@ -124,8 +141,10 @@ for (const entry of [
     },
     responses: {
       ...commonErrorResponses,
-      200: jsonContent(successBodySchema(anyObject), 'Item'),
-      204: { description: 'Deleted' },
+      200:
+        entry.method === 'delete'
+          ? nullDataResponse
+          : jsonContent(successBodySchema(anyObject), 'Item'),
     },
   });
 }
@@ -138,7 +157,7 @@ for (const path of ['/cms/testimonials/reorder', '/cms/stores/reorder']) {
     summary: `Admin: reorder ${path.includes('stores') ? 'stores' : 'testimonials'}`,
     security: [{ adminBearer: [] }],
     request: { body: jsonContent(cmsReorderSchema, 'Order') },
-    responses: { ...commonErrorResponses, 204: { description: 'Reordered' } },
+    responses: { ...commonErrorResponses, 200: nullDataResponse },
   });
 }
 
@@ -172,7 +191,7 @@ registry.registerPath({
   summary: 'Admin: reorder a navigation menu',
   security: [{ adminBearer: [] }],
   request: { params: menuKeyParamSchema, body: jsonContent(cmsReorderSchema, 'Order') },
-  responses: { ...commonErrorResponses, 204: { description: 'Reordered' } },
+  responses: { ...commonErrorResponses, 200: nullDataResponse },
 });
 
 registry.registerPath({

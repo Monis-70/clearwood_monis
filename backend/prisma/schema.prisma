@@ -723,6 +723,8 @@ model ImportJob {
   entity        String    @db.VarChar(64)
   status        String    @default("PENDING") @db.VarChar(64)
   fileName      String    @db.VarChar(255)
+  /// sha256 (hex) of the validated bytes; commit refuses any other file.
+  fileChecksum  String?   @db.Char(64)
   mediaId       String?   @db.VarChar(64)
   dryRun        Boolean   @default(true)
   totalRows     Int       @default(0)

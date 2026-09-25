@@ -1,3 +1,4 @@
+import { NAVIGATION_MENU_COLUMN_MAX } from '@shared/constants';
 import type { NavigationMenuKey } from '@shared/enums';
 
 import {
@@ -164,8 +165,15 @@ export async function seedNavigation(createdThisRun: CreatedThisRun): Promise<vo
     ];
   };
 
+  // More groups than columns: neighbours share a column, still in catalogue order, never past the cap.
   const megaMenuGroups = MEGA_MENU_ROOT_SLUGS.flatMap((slug, groupIndex) =>
-    groupFor(slug, groupIndex + 1),
+    groupFor(
+      slug,
+      Math.floor(
+        (groupIndex * NAVIGATION_MENU_COLUMN_MAX) /
+          Math.max(MEGA_MENU_ROOT_SLUGS.length, NAVIGATION_MENU_COLUMN_MAX),
+      ) + 1,
+    ),
   );
 
   const mainItems: ResolvedItem[] = [

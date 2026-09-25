@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 
 import type {
   AdminLoginInput,
+  AdminPasswordSetInput,
   AdminUserCreateInput,
   AdminUserListQuery,
   AdminUserUpdateInput,
@@ -15,14 +16,12 @@ import type {
   RoleUpdateInput,
   SessionListQuery,
 } from '@shared/schemas/auth';
-import type { CategoryTreeQuery } from '@shared/schemas/catalog';
 import type { IdParam } from '@shared/schemas/common';
 
 import { adminAuthService } from '../modules/auth/admin-auth.service';
 import { adminUserService } from '../modules/auth/admin-user.service';
 import { auditService } from '../modules/auth/audit.service';
 import { roleService } from '../modules/auth/role.service';
-import { categoryService } from '../services/category.service';
 import { ok, paginated } from '../utils/response';
 
 /** R1 — thin: validated input in, service call, envelope out. */
@@ -127,8 +126,18 @@ export const adminManagementController = {
     ok(res, await adminUserService.assignRoles(req, id, roleCodes));
   },
 
+  async setPassword(req: Request, res: Response): Promise<void> {
+    const { id } = req.params as unknown as IdParam;
+    const { newPassword } = req.body as AdminPasswordSetInput;
+    ok(res, await adminUserService.setPassword(req, id, newPassword));
+  },
+
   async listRoles(_req: Request, res: Response): Promise<void> {
     ok(res, await roleService.list());
+  },
+
+  async getRole(req: Request, res: Response): Promise<void> {
+    ok(res, await roleService.get((req.params as unknown as IdParam).id));
   },
 
   async createRole(req: Request, res: Response): Promise<void> {
@@ -152,11 +161,5 @@ export const adminManagementController = {
   async listAuditLogs(req: Request, res: Response): Promise<void> {
     const page = await auditService.list(req.query as unknown as AuditLogQuery);
     paginated(res, page.items, { page: page.page, limit: page.limit, total: page.total });
-  },
-
-  /** Proves the guard chain end to end by reusing Prompt 2's service — no new query logic. */
-  async categories(req: Request, res: Response): Promise<void> {
-    const query = req.query as unknown as CategoryTreeQuery;
-    ok(res, await categoryService.getTree({ ...query, includeInactive: true }));
   },
 };

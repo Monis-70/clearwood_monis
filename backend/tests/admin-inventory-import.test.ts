@@ -425,6 +425,56 @@ describe('import / export', () => {
     expect(response.status).toBe(403);
   });
 
+  it('commits only the exact file that passed validation', async () => {
+    const header =
+      'slug,name,parentSlug,kind,position,isActive,showInMenu,shortDescription,seoTitle,seoDescription';
+    const validated = `import-same-${Date.now()}`;
+    const swapped = `import-swapped-${Date.now()}`;
+    createdCategorySlugs.push(validated, swapped);
+    const csv = [header, `${validated},Validated Category,,STANDARD,0,true,true,,,`].join('\n');
+    const other = [header, `${swapped},Swapped Category,,STANDARD,0,true,true,,,`].join('\n');
+
+    const dryRun = await post(superAdmin, '/api/v1/admin/catalog/import/CATEGORY')
+      .field('dryRun', 'true')
+      .attach('files', Buffer.from(csv), 'categories.csv');
+    expect(dryRun.body.data.status).toBe('VALIDATED');
+    const commitUrl = `/api/v1/admin/catalog/import/jobs/${dryRun.body.data.id}/commit`;
+
+    const mismatch = await post(superAdmin, commitUrl).attach(
+      'files',
+      Buffer.from(other),
+      'categories.csv',
+    );
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.body.error.code).toBe('IMPORT_FILE_MISMATCH');
+    expect(await prisma.category.count({ where: { slug: swapped } })).toBe(0);
+    expect(
+      (await prisma.importJob.findUniqueOrThrow({ where: { id: dryRun.body.data.id } })).status,
+    ).toBe('VALIDATED');
+
+    const match = await post(superAdmin, commitUrl).attach(
+      'files',
+      Buffer.from(csv),
+      'renamed.csv',
+    );
+    expect(match.status).toBe(200);
+    expect(match.body.data.status).toBe('COMPLETED');
+    expect(await prisma.category.count({ where: { slug: validated } })).toBe(1);
+
+    // A job validated before checksums were recorded must be validated again.
+    await prisma.importJob.update({
+      where: { id: dryRun.body.data.id },
+      data: { fileChecksum: null },
+    });
+    const legacy = await post(superAdmin, commitUrl).attach(
+      'files',
+      Buffer.from(csv),
+      'categories.csv',
+    );
+    expect(legacy.status).toBe(409);
+    expect(legacy.body.error.code).toBe('IMPORT_FILE_MISMATCH');
+  });
+
   it('refuses a commit without any import permission before looking the job up', async () => {
     const csv = [
       'slug,name,parentSlug,kind,position,isActive,showInMenu,shortDescription,seoTitle,seoDescription',

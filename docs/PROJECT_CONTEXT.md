@@ -2190,9 +2190,10 @@ delete afterwards. One of them runs a second OS process as the "other worker".
 
 Legacy, kept deliberately: `services/product.service.ts` (Prompt 2 detail, only
 `tests/catalog.test.ts` uses it; the storefront PDP is `modules/storefront/pdp.service.ts`) and
-`productRepository.list` (no callers). `GET /api/v1/admin/catalog/categories` is registered twice;
-the first registration (`admin.routes.ts`, the full tree) wins and the paginated list in
-`adminCatalog.routes.ts` is unreachable. Left as-is because the tree is the published contract.
+`productRepository.list` (no callers). `GET /api/v1/admin/catalog/categories` is the paginated,
+filterable list in `adminCatalog.routes.ts` (it used to be shadowed by a second, full-tree
+registration in `admin.routes.ts`, now removed); the tree is `GET .../categories/tree`.
+`tests/api.test.ts` fails if any method and path is ever registered twice.
 
 ### Invariants the database enforces
 
@@ -2677,5 +2678,7 @@ five catalog migrations took 32 s, a structural seed 56-89 s.
   `backend/.env` still has `NODE_ENV=development` (PM2 sets production), `AUTH_COOKIE_SECURE=false`,
   placeholder secrets and the placeholder admin email, so production cannot boot until the owner
   sets them (`npm run check:production`).
-- The seed writes mega-menu `menuColumn` values above 10 (11-13 in production, where Complete
-  Interior Solutions and Bedroom Headboard share 11) while the admin API accepts 0-10.
+- The seed wrote mega-menu `menuColumn` values above 10 (11-13 in production, where Complete
+  Interior Solutions and Bedroom Headboard share 11) while the admin API accepts 0-10. The seed now
+  spreads the groups over 1-`NAVIGATION_MENU_COLUMN_MAX` (`tests/seed-navigation-limits.test.ts`),
+  but it is create-only, so rows already in production keep 11-13 until corrected in the admin.

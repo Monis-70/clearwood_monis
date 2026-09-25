@@ -3,7 +3,12 @@ import type { Request, Response } from 'express';
 import type { ReportQuery } from '@shared/schemas/fulfilment';
 
 import { auditService } from '../modules/auth/audit.service';
-import { reportService, type ReportKind } from '../modules/reports/report.service';
+import {
+  REPORT_PERMISSIONS,
+  reportService,
+  type ReportKind,
+} from '../modules/reports/report.service';
+import { AppError } from '../utils/AppError';
 import { ok } from '../utils/response';
 
 /** R1 — thin: resolve the caller, call a service, answer through the one envelope. */
@@ -11,8 +16,17 @@ import { ok } from '../utils/response';
 export const adminReportController = {
   async generate(req: Request, res: Response): Promise<void> {
     const query = req.query as unknown as ReportQuery;
+    const kind = query.kind as ReportKind;
 
-    const report = await reportService.generate(query.kind as ReportKind, {
+    const required = REPORT_PERMISSIONS[kind];
+    if (!req.auth?.permissions.includes(required)) {
+      throw AppError.forbidden(`The ${kind} report requires ${required}`, {
+        kind,
+        required: [required],
+      });
+    }
+
+    const report = await reportService.generate(kind, {
       from: query.from,
       to: query.to,
     });

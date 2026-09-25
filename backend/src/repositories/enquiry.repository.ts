@@ -1,5 +1,6 @@
 import type { Enquiry, Prisma } from '@prisma/client';
 
+import { AdminRoleCode } from '@shared/enums';
 import type { EnquiryListQuery } from '@shared/schemas/enquiry';
 
 import { prisma } from '../config/prisma';
@@ -11,6 +12,23 @@ import { updateVersioned } from './versioned';
 /** R1 - enquiries (contract work, custom furniture, interiors, bulk orders) are stored here. */
 
 const SORTABLE = ['createdAt', 'updatedAt', 'status'] as const;
+
+/** An active admin who can read the queue: an owner who cannot open an enquiry cannot work it. */
+const assignableAdmin: Prisma.AdminUserWhereInput = {
+  status: 'ACTIVE',
+  ...notDeleted,
+  roles: {
+    some: {
+      role: {
+        isActive: true,
+        OR: [
+          { code: AdminRoleCode.SUPER_ADMIN },
+          { permissions: { some: { permission: { code: 'lead.enquiry.read' } } } },
+        ],
+      },
+    },
+  },
+};
 
 export const enquiryRepository = {
   create(data: Prisma.EnquiryUncheckedCreateInput): Promise<Enquiry> {
@@ -127,8 +145,16 @@ export const enquiryRepository = {
 
   findActiveAdmin(id: string): Promise<{ id: string } | null> {
     return prisma.adminUser.findFirst({
-      where: { id, status: 'ACTIVE', ...notDeleted },
+      where: { id, ...assignableAdmin },
       select: { id: true },
+    });
+  },
+
+  findAssignableAdmins(): Promise<{ id: string; name: string }[]> {
+    return prisma.adminUser.findMany({
+      where: assignableAdmin,
+      select: { id: true, name: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
   },
 };

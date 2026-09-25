@@ -110,6 +110,23 @@ registry.registerPath({
 
 registry.registerPath({
   method: 'get',
+  path: `${ADMIN_PREFIX}/enquiries/assignees`,
+  tags: ['Admin enquiries'],
+  summary: 'Who an enquiry can be assigned to',
+  description:
+    'Requires `lead.enquiry.assign`. Active admins who can read enquiries, id and name only - the ' +
+    'same rule PATCH applies to `assignedToId`.',
+  responses: {
+    200: jsonContent(
+      successBodySchema(z.array(z.object({ id: z.string(), name: z.string() }))),
+      'Eligible assignees',
+    ),
+    ...commonErrorResponses,
+  },
+});
+
+registry.registerPath({
+  method: 'get',
   path: `${ADMIN_PREFIX}/enquiries/{id}`,
   tags: ['Admin enquiries'],
   summary: 'One enquiry with its details and context',
@@ -154,6 +171,13 @@ adminEnquiryRouter.get(
   requirePermission('lead.enquiry.read'),
   validate({ query: enquiryListQuerySchema }),
   asyncHandler(adminEnquiryController.list),
+);
+
+adminEnquiryRouter.get(
+  '/enquiries/assignees',
+  authenticate('ADMIN'),
+  requirePermission('lead.enquiry.assign'),
+  asyncHandler(adminEnquiryController.assignees),
 );
 
 adminEnquiryRouter.get(

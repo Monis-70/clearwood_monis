@@ -252,12 +252,13 @@ describe('realm isolation on the guarded routes', () => {
 
   it('lets a permitted admin through', async () => {
     const response = await request(app)
-      .get('/api/v1/admin/catalog/categories')
+      .get('/api/v1/admin/catalog/categories?depth=0&limit=100')
       .set('Authorization', `Bearer ${adminToken}`);
 
     expect(response.status).toBe(200);
     // The seeded site map's root groups (16 since the catalog-management taxonomy).
     expect(response.body.data).toHaveLength(16);
+    expect(response.body.meta).toMatchObject({ page: 1, limit: 100, total: 16 });
   });
 });
 

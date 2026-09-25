@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { Prisma } from '@prisma/client';
 import { parse } from 'csv-parse/sync';
 import type { z } from 'zod';
@@ -56,6 +58,8 @@ import { EXPORT_HEADERS } from './export.service';
 
 const errorsColumn = jsonColumn<ImportRowErrorDto[]>(undefined, 'ImportJob.errorsJson');
 const summaryColumn = jsonColumn<Record<string, number>>(undefined, 'ImportJob.summaryJson');
+
+const checksumOf = (buffer: Buffer): string => createHash('sha256').update(buffer).digest('hex');
 
 /** The only tables an import may ever touch. */
 export const IMPORT_PERMISSIONS: Record<ImportEntity, Permission[]> = {
@@ -1050,6 +1054,7 @@ export const importService = {
         entity,
         status: 'VALIDATING',
         fileName: file.originalName,
+        fileChecksum: checksumOf(file.buffer),
         dryRun,
         totalRows: rows.length,
         createdById,
@@ -1123,6 +1128,16 @@ export const importService = {
         'IMPORT_NOT_VALIDATED',
         'Only a job that passed validation can be committed',
         { id: jobId, status: job.status },
+      );
+    }
+
+    // Only the bytes that passed validation may be written; a job without a checksum predates it.
+    if (!job.fileChecksum || job.fileChecksum !== checksumOf(buffer)) {
+      throw new AppError(
+        409,
+        'IMPORT_FILE_MISMATCH',
+        'This is not the file that was validated. Attach the same file, or validate the new one first.',
+        { id: jobId },
       );
     }
 

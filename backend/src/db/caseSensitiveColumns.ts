@@ -34,6 +34,7 @@ export const CASE_SENSITIVE_COLUMNS: CaseSensitiveColumn[] = [
   { table: 'IdempotencyKey', column: 'requestHash', why: 'request body digest' },
   { table: 'Media', column: 'checksum', why: 'content digest used for deduplication' },
   { table: 'OrderDocument', column: 'checksum', why: 'digest of the stored GST document' },
+  { table: 'ImportJob', column: 'fileChecksum', why: 'digest of the validated import file' },
   { table: 'SearchDocument', column: 'checksum', why: 'index freshness digest' },
   { table: 'Cart', column: 'lastQuoteContextHash', why: 'pricing context digest' },
   { table: 'CartItem', column: 'customizationHash', why: 'line identity digest' },

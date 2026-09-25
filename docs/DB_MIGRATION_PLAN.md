@@ -247,6 +247,14 @@ history against the schema on a shadow database agree. Deploy-relevant behaviour
   Category without an index. At a much larger catalog, add `@@index([updatedAt])` to those five
   (a separate, additive migration).
 
+## 4f. `20260925100000_import_job_checksum` (admin backend fixes)
+
+Additive only: `ImportJob.fileChecksum CHAR(64) COLLATE utf8mb4_bin NULL`, the sha256 of the
+file a dry run validated (registered in `caseSensitiveColumns.ts` like every other digest). `POST /admin/catalog/import/jobs/{id}/commit` refuses any other bytes with
+409 `IMPORT_FILE_MISMATCH`. No backfill: a job created before the column has NULL and must be
+validated again before it can be committed. Rollback: the previous build ignores the column;
+`ALTER TABLE ImportJob DROP COLUMN fileChecksum` undoes it.
+
 ## 5. Testing note
 
 The Vitest suite always runs against its own SQLite file (`backend/prisma/test.db`, rebuilt by
