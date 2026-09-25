@@ -284,6 +284,13 @@ export interface InventorySnapshotDto {
   allowBackorder: boolean;
 }
 
+/** One row of the low-stock report: the snapshot plus what an operator needs to recognise it. */
+export interface LowStockItemDto extends InventorySnapshotDto {
+  productId: string;
+  productName: string;
+  variantName: string | null;
+}
+
 export interface ImportRowErrorDto {
   row: number;
   column: string | null;

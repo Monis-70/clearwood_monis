@@ -1,7 +1,7 @@
 import { seedDemoEnabled } from '../src/config/env';
 import { logger } from '../src/config/logger';
 import { disconnectPrisma } from '../src/config/prisma';
-import { categoryService } from '../src/container';
+import { categoryService, closeDrivers } from '../src/container';
 
 import { seedSettings } from './seed/01-settings';
 import { seedTaxClasses } from './seed/02-tax-classes';
@@ -148,6 +148,8 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    // The services the seed reuses open the cache driver (a Redis socket that keeps the process alive).
+    await closeDrivers();
     await prisma.$disconnect();
     await disconnectPrisma();
   });

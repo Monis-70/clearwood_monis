@@ -2,7 +2,11 @@ import type { Prisma, ProductVariant } from '@prisma/client';
 
 import type { InventoryReason, StockStatus } from '@shared/enums';
 import type { InventoryHistoryQuery, LowStockQuery } from '@shared/schemas/catalogAdmin';
-import type { InventoryLedgerEntryDto, InventorySnapshotDto } from '@shared/types/catalogAdmin';
+import type {
+  InventoryLedgerEntryDto,
+  InventorySnapshotDto,
+  LowStockItemDto,
+} from '@shared/types/catalogAdmin';
 
 import { prisma } from '../../config/prisma';
 import { catalogEvents } from '../../events/catalogEvents';
@@ -389,22 +393,32 @@ export const inventoryService = {
     return pageResult(items.map(toLedgerDto), total, query);
   },
 
-  async lowStock(query: LowStockQuery): Promise<PageResult<InventorySnapshotDto>> {
-    const rows = await prisma.productVariant.findMany({
-      where: {
-        deletedAt: null,
-        isActive: true,
-        ...(query.includeBackorder ? {} : { allowBackorder: false }),
-      },
-      orderBy: [{ stockQty: 'asc' }, { id: 'asc' }],
-    });
+  async lowStock(query: LowStockQuery): Promise<PageResult<LowStockItemDto>> {
+    const where: Prisma.ProductVariantWhereInput = {
+      deletedAt: null,
+      isActive: true,
+      ...(query.includeBackorder ? {} : { allowBackorder: false }),
+      // A made-to-order product is built per order, so its stock count is no risk (stockStatusFor).
+      product: { isMadeToOrder: false },
+      stockQty: { lte: query.threshold ?? prisma.productVariant.fields.lowStockThreshold },
+    };
 
-    const threshold = query.threshold;
-    const low = rows.filter((row) =>
-      threshold === undefined ? row.stockQty <= row.lowStockThreshold : row.stockQty <= threshold,
-    );
+    const [rows, total] = await Promise.all([
+      prisma.productVariant.findMany({
+        where,
+        include: { product: { select: { id: true, name: true } } },
+        orderBy: [{ stockQty: 'asc' }, { id: 'asc' }],
+        ...skipTake(query),
+      }),
+      prisma.productVariant.count({ where }),
+    ]);
 
-    const { skip, take } = skipTake(query);
-    return pageResult(low.slice(skip, skip + take).map(toSnapshot), low.length, query);
+    const items = rows.map(({ product, ...variant }) => ({
+      ...toSnapshot(variant),
+      productId: product.id,
+      productName: product.name,
+      variantName: variant.name,
+    }));
+    return pageResult(items, total, query);
   },
 };
