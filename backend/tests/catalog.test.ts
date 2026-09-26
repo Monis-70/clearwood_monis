@@ -145,7 +145,9 @@ describe('GET /api/v1/catalog/attributes', () => {
       .query({ categorySlug: 'fabric-sofas' });
 
     expect(response.status).toBe(200);
-    expect(response.body.meta.total).toBe(6);
+    // The sofa lineage: six descriptive attributes plus frame wood, back style, cushion
+    // firmness, assembly and warranty, which the seeded sofas carry (F14).
+    expect(response.body.meta.total).toBe(11);
     expect(response.body.data.map((attribute: { code: string }) => attribute.code)).toContain(
       'FABRIC',
     );

@@ -64,7 +64,19 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'sofas',
     isFeatured: true,
     shortDescription: 'Hand-built sofa frames, individually upholstered in our own workshop.',
-    attributes: ['COLOUR', 'FABRIC', 'SEATER', 'LEG_TYPE', 'FILLING', 'ARM_STYLE'],
+    attributes: [
+      'COLOUR',
+      'FABRIC',
+      'SEATER',
+      'LEG_TYPE',
+      'FILLING',
+      'ARM_STYLE',
+      'WOOD_TYPE',
+      'BACK_STYLE',
+      'CUSHION_FIRMNESS',
+      'ASSEMBLY_TYPE',
+      'WARRANTY',
+    ],
     children: [
       { name: 'All Sofas', slug: 'all-sofas' },
       { name: 'Fabric Sofas', slug: 'fabric-sofas' },
@@ -94,7 +106,18 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'chairs',
     isFeatured: true,
     shortDescription: 'Lounge, office and accent chairs built one at a time.',
-    attributes: ['COLOUR', 'FABRIC', 'LEG_TYPE', 'BACK_STYLE', 'ASSEMBLY_TYPE'],
+    attributes: [
+      'COLOUR',
+      'FABRIC',
+      'LEG_TYPE',
+      'BACK_STYLE',
+      'ASSEMBLY_TYPE',
+      'WOOD_TYPE',
+      'FILLING',
+      'CUSHION_FIRMNESS',
+      'ARM_STYLE',
+      'WARRANTY',
+    ],
     children: [
       { name: 'All Chairs', slug: 'all-chairs' },
       { name: 'Lounge Chairs', slug: 'lounge-chairs' },
@@ -115,7 +138,17 @@ export const CATEGORY_TREE: SeedCategory[] = [
     name: 'Seating',
     slug: 'seating',
     shortDescription: 'Stools, benches and ottomans that finish a room.',
-    attributes: ['COLOUR', 'FABRIC', 'FILLING', 'WOOD_TYPE'],
+    attributes: [
+      'COLOUR',
+      'FABRIC',
+      'FILLING',
+      'WOOD_TYPE',
+      'LEG_TYPE',
+      'CUSHION_FIRMNESS',
+      'ARM_STYLE',
+      'ASSEMBLY_TYPE',
+      'WARRANTY',
+    ],
     children: [
       { name: 'All Seating', slug: 'all-seating' },
       { name: 'Stools', slug: 'stools' },
@@ -129,7 +162,16 @@ export const CATEGORY_TREE: SeedCategory[] = [
   {
     name: 'Sofa Chairs',
     slug: 'sofa-chairs',
-    attributes: ['COLOUR', 'FABRIC', 'SEATER', 'ARM_STYLE'],
+    attributes: [
+      'COLOUR',
+      'FABRIC',
+      'SEATER',
+      'ARM_STYLE',
+      'WOOD_TYPE',
+      'FILLING',
+      'CUSHION_FIRMNESS',
+      'WARRANTY',
+    ],
     children: [
       { name: 'All Sofa Chairs', slug: 'all-sofa-chairs' },
       { name: 'Single-Seater Sofa Chairs', slug: 'single-seater-sofa-chairs' },
@@ -143,7 +185,7 @@ export const CATEGORY_TREE: SeedCategory[] = [
     slug: 'tables',
     isFeatured: true,
     shortDescription: 'Solid-wood tops finished by hand in six finishes.',
-    attributes: ['WOOD_TYPE', 'WOOD_FINISH', 'SIZE', 'LEG_TYPE'],
+    attributes: ['WOOD_TYPE', 'WOOD_FINISH', 'SIZE', 'LEG_TYPE', 'ASSEMBLY_TYPE', 'WARRANTY'],
     children: [
       { name: 'All Tables', slug: 'all-tables' },
       { name: 'Coffee Tables', slug: 'coffee-tables' },
@@ -158,7 +200,16 @@ export const CATEGORY_TREE: SeedCategory[] = [
   {
     name: 'Recliners',
     slug: 'recliners',
-    attributes: ['COLOUR', 'FABRIC', 'SEATER', 'WARRANTY'],
+    attributes: [
+      'COLOUR',
+      'FABRIC',
+      'SEATER',
+      'WARRANTY',
+      'FILLING',
+      'WOOD_TYPE',
+      'CUSHION_FIRMNESS',
+      'ARM_STYLE',
+    ],
     children: [
       { name: 'All Recliners', slug: 'all-recliners' },
       { name: 'Single-Seater Recliners', slug: 'single-seater-recliners' },
@@ -171,7 +222,15 @@ export const CATEGORY_TREE: SeedCategory[] = [
     name: 'Dining',
     slug: 'dining',
     isFeatured: true,
-    attributes: ['WOOD_TYPE', 'WOOD_FINISH', 'SEATER', 'SIZE'],
+    attributes: [
+      'WOOD_TYPE',
+      'WOOD_FINISH',
+      'SEATER',
+      'SIZE',
+      'LEG_TYPE',
+      'ASSEMBLY_TYPE',
+      'WARRANTY',
+    ],
     children: [
       { name: 'All Dining Sets', slug: 'all-dining-sets' },
       { name: '9-Seater Dining Sets', slug: '9-seater-dining-sets' },
@@ -190,7 +249,7 @@ export const CATEGORY_TREE: SeedCategory[] = [
   {
     name: 'Balcony Furniture',
     slug: 'balcony-furniture',
-    attributes: ['COLOUR', 'WOOD_TYPE', 'WOOD_FINISH', 'SIZE'],
+    attributes: ['COLOUR', 'WOOD_TYPE', 'WOOD_FINISH', 'SIZE', 'FABRIC', 'WARRANTY'],
     children: [
       { name: 'Balcony Sets', slug: 'balcony-sets' },
       { name: 'Balcony Chairs', slug: 'balcony-chairs' },
@@ -203,7 +262,7 @@ export const CATEGORY_TREE: SeedCategory[] = [
   {
     name: 'Outdoor Furniture',
     slug: 'outdoor-furniture',
-    attributes: ['COLOUR', 'FABRIC', 'WOOD_TYPE', 'SIZE'],
+    attributes: ['COLOUR', 'FABRIC', 'WOOD_TYPE', 'SIZE', 'ASSEMBLY_TYPE', 'WARRANTY'],
     children: [
       { name: 'All Outdoor Sets', slug: 'all-outdoor-sets' },
       { name: 'Table & Chair Sets', slug: 'outdoor-table-chair-sets' },
@@ -293,7 +352,17 @@ export const CATEGORY_TREE: SeedCategory[] = [
     name: 'Complete Interior Solutions',
     slug: 'complete-interior-solutions',
     shortDescription: 'Whole-room packages designed and manufactured end to end.',
-    attributes: ['COLOUR', 'WOOD_TYPE', 'WOOD_FINISH'],
+    attributes: [
+      'COLOUR',
+      'WOOD_TYPE',
+      'WOOD_FINISH',
+      'FILLING',
+      'CUSHION_FIRMNESS',
+      'ARM_STYLE',
+      'LEG_TYPE',
+      'ASSEMBLY_TYPE',
+      'WARRANTY',
+    ],
     children: [
       { name: 'Living Room', slug: 'interior-living-room' },
       { name: 'Bedroom', slug: 'interior-bedroom' },
