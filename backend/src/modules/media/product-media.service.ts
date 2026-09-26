@@ -6,6 +6,7 @@ import type {
 } from '@shared/schemas/media';
 import type { ProductMediaItemDto } from '@shared/types/media';
 
+import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
 import { mediaRepository } from '../../repositories/media.repository';
 import { productRepository } from '../../repositories/product.repository';
@@ -18,6 +19,7 @@ import { mark } from '../../utils/uniqueMark';
 import { catalogCacheService } from '../catalog-admin/catalogCache.service';
 import { productAdminService } from '../catalog-admin/product.admin.service';
 
+import { supportsRenditions } from './image.processor';
 import { toMediaDto } from './media.service';
 import { mediaUsageService, type UsageRef } from './media-usage.service';
 
@@ -77,6 +79,26 @@ async function assertVariantBelongs(productId: string, variantId: string): Promi
   }
 }
 
+/** Product galleries need raster images of at least MIN_PRODUCT_IMAGE_DIMENSION on the shortest side. */
+function assertProductImageSize(media: {
+  id: string;
+  kind: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+}): void {
+  const min = env.MIN_PRODUCT_IMAGE_DIMENSION;
+  if (min <= 0 || media.kind !== 'IMAGE' || !supportsRenditions(media.mimeType)) return;
+  if (!media.width || !media.height) return;
+  if (Math.min(media.width, media.height) >= min) return;
+  throw new AppError(
+    422,
+    'IMAGE_TOO_SMALL',
+    `That image is ${media.width} × ${media.height} px; product images need at least ${min} px on the shortest side`,
+    { mediaId: media.id, width: media.width, height: media.height, minDimension: min },
+  );
+}
+
 export const productMediaService = {
   async list(productId: string): Promise<ProductMediaItemDto[]> {
     const rows = await productMediaRepository.findForProduct(productId);
@@ -89,6 +111,12 @@ export const productMediaService = {
       select: { id: true },
     });
     if (!product) throw AppError.notFound('Product not found', { productId });
+
+    // Items are written one by one, so every size refusal is raised before the first write.
+    for (const item of input.items) {
+      const media = await mediaRepository.findById(item.mediaId);
+      if (media) assertProductImageSize(media);
+    }
 
     let nextPosition = await productMediaRepository.maxPosition(productId);
     const attached: ProductMediaItemDto[] = [];

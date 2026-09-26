@@ -227,6 +227,7 @@ export const mediaService = {
       maxUploadSizeMb: env.MAX_UPLOAD_SIZE_MB,
       maxUploadFiles: env.MAX_UPLOAD_FILES,
       maxImageDimension: env.MAX_IMAGE_DIMENSION,
+      minProductImageDimension: env.MIN_PRODUCT_IMAGE_DIMENSION,
       allowedImageMime: env.ALLOWED_IMAGE_MIME,
       allowedVideoMime: env.ALLOWED_VIDEO_MIME,
       allowedDocMime: env.ALLOWED_DOC_MIME,

@@ -18,6 +18,8 @@ import { searchIndexerService } from '../src/modules/storefront/searchIndexer.se
 import { categoryService } from '../src/services/category.service';
 import { mark } from '../src/utils/uniqueMark';
 
+import { uploadGalleryImages } from './helpers/galleryImages';
+
 /**
  * Catalog hardening (PROJECT_CONTEXT §48): scoped import invalidation, typed product
  * relationships, the category and contract-work contracts, category counts that follow every
@@ -262,14 +264,7 @@ beforeAll(async () => {
   defaultTaxClassId = (
     await prisma.taxClass.findFirstOrThrow({ where: { isDefault: true, deletedAt: null } })
   ).id;
-  readyMediaIds = (
-    await prisma.media.findMany({
-      where: { deletedAt: null, status: 'READY', kind: 'IMAGE' },
-      orderBy: { id: 'asc' },
-      take: 3,
-      select: { id: true },
-    })
-  ).map((row) => row.id);
+  readyMediaIds = await uploadGalleryImages(3);
   expect(readyMediaIds).toHaveLength(3);
 
   catalogManager = await admin(`ch.catalog.${tag}@clearwood.local`, 'CATALOG_MANAGER');

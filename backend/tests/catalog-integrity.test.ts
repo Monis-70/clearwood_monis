@@ -16,6 +16,7 @@ import { variantAdminService } from '../src/modules/catalog-admin/variant.admin.
 import { productMediaService } from '../src/modules/media/product-media.service';
 import { orderBy } from '../src/repositories/helpers';
 import { runConcurrently } from './helpers/concurrency';
+import { uploadGalleryImages } from './helpers/galleryImages';
 
 /**
  * Prompt 3 — catalog invariants that must hold no matter which code path (or which race)
@@ -74,14 +75,7 @@ beforeAll(async () => {
     select: { id: true },
   });
   categoryIds = categories.map((row) => row.id);
-
-  const media = await prisma.media.findMany({
-    where: { deletedAt: null, status: 'READY' },
-    orderBy: { id: 'asc' },
-    take: 4,
-    select: { id: true },
-  });
-  mediaIds = media.map((row) => row.id);
+  mediaIds = await uploadGalleryImages(4);
 });
 
 /* --------------------------------------------------------------- database level */

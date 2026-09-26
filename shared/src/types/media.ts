@@ -97,6 +97,8 @@ export interface MediaConfigDto {
   maxUploadSizeMb: number;
   maxUploadFiles: number;
   maxImageDimension: number;
+  /** Shortest side a raster image needs to join a product gallery; 0 when not enforced. */
+  minProductImageDimension: number;
   allowedImageMime: string[];
   allowedVideoMime: string[];
   allowedDocMime: string[];

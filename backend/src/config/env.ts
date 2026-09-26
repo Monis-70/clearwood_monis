@@ -186,6 +186,8 @@ const envSchema = z
     MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(500).default(15),
     MAX_UPLOAD_FILES: z.coerce.number().int().min(1).max(100).default(20),
     MAX_IMAGE_DIMENSION: z.coerce.number().int().min(256).max(12000).default(4000),
+    // Shortest side a raster image needs before it can join a product gallery; 0 turns it off.
+    MIN_PRODUCT_IMAGE_DIMENSION: z.coerce.number().int().min(0).max(4000).default(1024),
     ALLOWED_IMAGE_MIME: z
       .string()
       .default('image/jpeg,image/png,image/webp,image/avif,image/svg+xml,image/gif')

@@ -2682,3 +2682,26 @@ five catalog migrations took 32 s, a structural seed 56-89 s.
   Interior Solutions and Bedroom Headboard share 11) while the admin API accepts 0-10. The seed now
   spreads the groups over 1-`NAVIGATION_MENU_COLUMN_MAX` (`tests/seed-navigation-limits.test.ts`),
   but it is create-only, so rows already in production keep 11-13 until corrected in the admin.
+
+## 50. Admin closure pass (pre-final admin UI)
+
+- **Low stock ignores the trash**: variants of a product in the trash are no stock risk
+  (`inventory.service.lowStock`, `tests/low-stock.test.ts`).
+- **Seeded specifications vs the publish gate (admin finding F14)**: 66 of the 71 demo products
+  carried specifications (warranty, frame wood, assembly, cushion firmness...) that their primary
+  category's lineage never linked, so the gate refused them with `INVALID_CATEGORY_ATTRIBUTES`.
+  The gate is right (specifications must be attributes the primary category resolves, ancestors
+  included); the seeded tree was incomplete. The top-level categories in
+  `prisma/seed/data/categories.ts` now link what their products use. The seed stays create-only:
+  links are written only for categories a run creates, so existing databases (and admin choices)
+  are untouched; an existing database is fixed by linking the attribute in the admin.
+  `tests/seed-publish-gate.test.ts` checks the seed data statically, every seeded demo product
+  against the live gate, and that a link on an ancestor satisfies the gate.
+- **Minimum product image size**: `MIN_PRODUCT_IMAGE_DIMENSION` (default 1024, 0 disables) is the
+  shortest side a raster image (not SVG or GIF) needs to join a product gallery. It is checked when
+  images are attached, for every item before anything is written (attach commits item by item),
+  and refused with 422 `IMAGE_TOO_SMALL` (`details: { mediaId, width, height, minDimension }`).
+  Uploads are not affected: icons, swatches and logos are legitimately small. `GET
+  /admin/media/config` publishes it as `minProductImageDimension`. Galleries written before the
+  rule, including the seeded demo images (1200 x 900), are left as they are; tests that attach
+  images upload their own (`tests/helpers/galleryImages.ts`).

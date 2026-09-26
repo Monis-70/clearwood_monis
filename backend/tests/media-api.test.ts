@@ -229,7 +229,7 @@ describe('metadata, usage and deletion', () => {
       .post('/api/v1/admin/media/upload')
       .set('Cookie', catalogManager.header)
       .set('X-CSRF-Token', catalogManager.csrf)
-      .attach('files', await png(500, 400, '#1E1A16'), 'disposable.png');
+      .attach('files', await png(1280, 1024, '#1E1A16'), 'disposable.png');
 
     const mediaId = upload.body.data.uploaded[0].media.id;
     const product = await prisma.product.findFirstOrThrow({ where: { deletedAt: null } });
@@ -271,6 +271,63 @@ describe('metadata, usage and deletion', () => {
       (value) => value > 0,
     );
     expect(audited).toBeGreaterThan(0);
+  });
+
+  it('refuses a product image below MIN_PRODUCT_IMAGE_DIMENSION before writing anything', async () => {
+    const upload = async (width: number, height: number, hex: string, name: string) => {
+      const response = await request(app)
+        .post('/api/v1/admin/media/upload')
+        .set('Cookie', catalogManager.header)
+        .set('X-CSRF-Token', catalogManager.csrf)
+        .attach('files', await png(width, height, hex), name);
+      // The library itself takes small images: icons, swatches and logos are small.
+      expect(response.status).toBe(201);
+      return response.body.data.uploaded[0].media.id as string;
+    };
+    const exact = await upload(1024, 1024, '#6B5646', 'exact-minimum.png');
+    const short = await upload(1400, 900, '#5B4636', 'too-short.png');
+    const product = await prisma.product.findFirstOrThrow({ where: { deletedAt: null } });
+    const before = await prisma.productMedia.count({ where: { productId: product.id } });
+
+    const refused = await request(app)
+      .post(`/api/v1/admin/products/${product.id}/media`)
+      .set('Cookie', catalogManager.header)
+      .set('X-CSRF-Token', catalogManager.csrf)
+      .send({ items: [{ mediaId: exact, role: 'GALLERY' }, { mediaId: short, role: 'GALLERY' }] });
+
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe('IMAGE_TOO_SMALL');
+    expect(refused.body.error.details).toEqual({
+      mediaId: short,
+      width: 1400,
+      height: 900,
+      minDimension: env.MIN_PRODUCT_IMAGE_DIMENSION,
+    });
+    // Not even the valid first item was written.
+    expect(await prisma.productMedia.count({ where: { productId: product.id } })).toBe(before);
+
+    const accepted = await request(app)
+      .post(`/api/v1/admin/products/${product.id}/media`)
+      .set('Cookie', catalogManager.header)
+      .set('X-CSRF-Token', catalogManager.csrf)
+      .send({ items: [{ mediaId: exact, role: 'GALLERY' }] });
+    expect(accepted.status).toBe(201);
+
+    await request(app)
+      .delete(`/api/v1/admin/products/${product.id}/media/${accepted.body.data[0].id}`)
+      .set('Cookie', catalogManager.header)
+      .set('X-CSRF-Token', catalogManager.csrf)
+      .expect(200);
+  });
+
+  it('publishes the product-image minimum in the upload config (default 1024 px)', async () => {
+    const response = await request(app)
+      .get('/api/v1/admin/media/config')
+      .set('Cookie', catalogManager.header);
+
+    expect(response.status).toBe(200);
+    expect(env.MIN_PRODUCT_IMAGE_DIMENSION).toBe(1024);
+    expect(response.body.data.minProductImageDimension).toBe(1024);
   });
 
   it('soft delete hides the asset but keeps the row, and restore brings it back', async () => {

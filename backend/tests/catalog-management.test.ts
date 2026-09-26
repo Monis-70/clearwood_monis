@@ -14,6 +14,8 @@ import { listingReconciler } from '../src/modules/storefront/listingReconciler.s
 import { searchIndexerService } from '../src/modules/storefront/searchIndexer.service';
 import { mark } from '../src/utils/uniqueMark';
 
+import { uploadGalleryImages } from './helpers/galleryImages';
+
 /**
  * The dynamic catalog (PROJECT_CONTEXT §47): an admin changes the catalog through the API and the
  * storefront follows - effective category visibility, rule categories, time-aware merchandising
@@ -248,12 +250,7 @@ beforeAll(async () => {
   defaultTaxClassId = (
     await prisma.taxClass.findFirstOrThrow({ where: { isDefault: true, deletedAt: null } })
   ).id;
-  readyMediaId = (
-    await prisma.media.findFirstOrThrow({
-      where: { deletedAt: null, status: 'READY' },
-      orderBy: { id: 'asc' },
-    })
-  ).id;
+  [readyMediaId] = (await uploadGalleryImages(1)) as [string];
 }, 120_000);
 
 afterAll(async () => {

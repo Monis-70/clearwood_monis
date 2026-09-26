@@ -167,7 +167,7 @@ describe('media writes invalidate what renders media, and nothing else', () => {
   };
 
   const png = (hex: string) =>
-    sharp({ create: { width: 320, height: 240, channels: 3, background: hex } })
+    sharp({ create: { width: 1280, height: 1024, channels: 3, background: hex } })
       .png()
       .toBuffer();
 
