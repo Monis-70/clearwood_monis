@@ -399,7 +399,8 @@ export const inventoryService = {
       isActive: true,
       ...(query.includeBackorder ? {} : { allowBackorder: false }),
       // A made-to-order product is built per order, so its stock count is no risk (stockStatusFor).
-      product: { isMadeToOrder: false },
+      // A product in the trash is not sold at all, so neither are its variants.
+      product: { isMadeToOrder: false, deletedAt: null },
       stockQty: { lte: query.threshold ?? prisma.productVariant.fields.lowStockThreshold },
     };
 

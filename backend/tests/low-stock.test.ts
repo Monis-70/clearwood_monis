@@ -74,6 +74,11 @@ beforeAll(async () => {
 
   const madeToOrder = await product('MTO', true);
   await variant(madeToOrder, 'MTO', { stock: 0, lowStockThreshold: 2 });
+
+  // A product in the trash is not sold, so its (still active) variants are no stock risk.
+  const trashed = await product('TRASHED', false);
+  await variant(trashed, 'TRASHED', { stock: 0, lowStockThreshold: 2 });
+  await prisma.product.update({ where: { id: trashed }, data: { deletedAt: new Date() } });
 });
 
 afterAll(async () => {
@@ -90,6 +95,11 @@ describe('inventory low-stock report', () => {
   it('includes backorderable variants only when asked', async () => {
     const page = await inventoryService.lowStock(query({ includeBackorder: true }));
     expect(ours(page.items)).toEqual(['AT', 'BACK', 'LOW', 'OUT']);
+  });
+
+  it('leaves out every variant of a product in the trash', async () => {
+    const page = await inventoryService.lowStock(query({ includeBackorder: true, threshold: 10 }));
+    expect(ours(page.items)).not.toContain('TRASHED');
   });
 
   it('applies an explicit threshold instead of each variant threshold', async () => {
