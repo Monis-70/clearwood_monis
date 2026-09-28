@@ -2705,3 +2705,123 @@ five catalog migrations took 32 s, a structural seed 56-89 s.
   /admin/media/config` publishes it as `minProductImageDimension`. Galleries written before the
   rule, including the seeded demo images (1200 x 900), are left as they are; tests that attach
   images upload their own (`tests/helpers/galleryImages.ts`).
+
+## 51. Storefront media contract (Prompt 02A)
+
+The storefront (a separate Next.js repository) never builds an image URL from a storage key, a path
+or an id: a reference that carries only an id renders as nothing. Before this change every category
+hero, collection banner, banner placement, wood-finish swatch, navigation icon, store photo and
+testimonial avatar was an id only, CMS renditions carried storage paths without URLs, and cards
+carried no second image. Every change below is additive: no field was removed, renamed or retyped,
+and no migration was needed.
+
+**One resolver.** `modules/media/publicImage.service.ts` turns media ids into `PublicImageDto`
+(an alias of `ProductImageDto`, the card image shape: original `url`, `sources[]` with a URL per
+rendition, blurhash, LQIP, dominant colour, focal point, alt). One SQL statement
+(`mediaRepository.findPublicImages`: `Media LEFT JOIN MediaVariant`, only the requested labels)
+loads any number of ids; a media row that is deleted or not `READY` resolves to `null`, as does an
+unset id. Every URL comes from `storage.url()`. Which renditions each slot carries is data in
+`shared/src/constants.ts` (`PUBLIC_IMAGE_RENDITIONS`), not a per-endpoint literal.
+
+### BC-1 - URLs for CMS media
+
+- **WHY**: `pageRenderer.service` `mediaDto()` returned the stored `Media.url` column and each
+  rendition's storage `path`. The storefront could only use the heavy original.
+- **ENDPOINTS**: `GET /content/home`, `GET /content/pages/{slug}` (every block's media, `heroMedia`,
+  `seo.ogMedia`).
+- **RESPONSE CHANGE**: the top-level `url` is `storage.url(path)` (the driver's answer, not a column
+  written at upload time, so a base-URL or CDN change applies at once); every `sources[]` entry
+  gains `url`. `path` stays.
+- **Fixed on the way**: category icons (`CATEGORY_CIRCLES`), collection banners
+  (`FEATURED_COLLECTION`, `COUNTDOWN_DEAL`), testimonial avatars and brand logos were never
+  hydrated: those rows were loaded in the same phase as the media query, so their ids never reached
+  it and the fields were always `null`. They are now loaded one phase earlier (the same statements,
+  in a different order), so the hydration count is unchanged and they resolve.
+- **BACKWARD COMPATIBILITY**: additive (`url` on sources); the top-level `url` is the same string
+  unless the storage base URL changed since upload.
+- **TESTS**: `tests/storefront-media-contract.test.ts` walks every media object in `/content/home`
+  and a page and requires an absolute URL under the driver's public base on the original and every
+  source, with `path` kept; a stale `Media.url` column is not served; icons, banners, avatars and
+  logos resolve; `cms-hydration.test.ts` and `query-budgets.test.ts` hold the count.
+
+### BC-2 - a secondary (hover) image on product cards, and BC-2b
+
+- **WHY**: admins can set HOVER images and `/gallery` returns them, but cards carried the PRIMARY
+  only, so the storefront had no crossfade.
+- **ENDPOINTS**: every card surface built on `toProductCard`: listings, curated strips, search,
+  related, `products/batch`, CMS product blocks, wishlist, recently viewed.
+- **RESPONSE CHANGE**: `ProductCardDto.hoverImage: ProductImageDto | null`. The card query loads the
+  PRIMARY (unchanged, whatever its scope) and the first generic HOVER - no variant, no colour, a
+  media row not deleted, lowest `position`, then id - in the SAME statement
+  (`primaryMark desc, position asc, id asc`, take 2). The mapper picks each by role, never by index.
+- **BC-2b**: `CARD_RENDITION_LABELS` gains `SQUARE`, the only `cover` preset, so a 1:1 card frame
+  gets a true 800 x 800 crop from any product image (product gallery images are at least
+  `MIN_PRODUCT_IMAGE_DIMENSION`, 1024, on the shortest side). Kept because the 24-card JSON grew
+  within the 35% gzip budget (measured below).
+- **BACKWARD COMPATIBILITY**: one new key on the card and extra `sources[]` entries; nothing moved.
+- **TESTS**: a card with and without a HOVER; variant- and colour-scoped HOVERs never reach a card;
+  both card key-set tests list `hoverImage` deliberately; SQUARE sources on card images; query
+  budgets unchanged.
+
+### BC-10 - list settings (`site.usp_lines`)
+
+- **WHY**: `contentSettingsSchema` accepted only scalars, so `PUT /admin/content/settings` could not
+  write the JSON array the seed stores in `site.usp_lines`, and the owner could not correct the
+  selling-point lines the storefront footer renders.
+- **ENDPOINTS**: `PUT /admin/content/settings`; read back through `GET /settings/public` and
+  `GET /admin/content/settings`.
+- **RESPONSE CHANGE**: none. The request may now carry a list of up to 20 strings (each trimmed,
+  1-200 characters). It is stored as JSON, so the public payload is the same real array. A list
+  sent to a key whose stored `valueType` is not `json` is refused with 422 `VALIDATION_ERROR`
+  (`details: { key, valueType }`) rather than stringified. Nested objects remain unsupported.
+- **BACKWARD COMPATIBILITY**: every scalar request that was valid still is, and is stored the same.
+- **TESTS**: `site.usp_lines` round-trips end to end; a 21-entry list and a 201-character entry are
+  422; a string setting still round-trips; a list for a string key is 422 and changes nothing; every
+  other public key is unchanged.
+
+### BC-3 - media wherever a public DTO returned only an id
+
+- **WHY**: public DTOs returned ids no public endpoint resolved.
+- **RESPONSE CHANGE** (a sibling next to every existing id; no id changed):
+
+  | DTO (endpoint)                                                         | New fields                                  | Renditions                   |
+  | ---------------------------------------------------------------------- | ------------------------------------------- | ---------------------------- |
+  | `CategoryLandingDto.category` (`/catalog/categories/{slug}/landing`)   | `bannerMedia`, `mobileBannerMedia`          | DESKTOP, MOBILE, LARGE, XLARGE |
+  | `CategoryLandingDto.children[]`                                        | `iconMediaId`, `iconMedia`                  | SMALL, MEDIUM                |
+  | `CategoryNode` (`/catalog/categories/tree`, detail children)           | `iconMedia`                                 | THUMB, SMALL                 |
+  | `CategoryDetail` (`/catalog/categories/{slug}`)                        | `bannerMedia`, `mobileBannerMedia`          | DESKTOP, MOBILE, LARGE, XLARGE |
+  | `CollectionDto` (`/catalog/collections`, `/catalog/collections/{slug}`) | `image` / `banner`, `mobileBanner`         | MEDIUM, LARGE / DESKTOP, MOBILE, LARGE |
+  | Banner (`/content/banners`, `HERO_SLIDER` `data.banners`)              | `media`, `mobileMedia`                      | DESKTOP, MOBILE, LARGE, XLARGE |
+  | `ProductSwatchDto`, `FacetValueDto`, `OptionValueAvailabilityDto`      | `swatchImage`                               | THUMB                        |
+  | `NavigationNode` (`/navigation/{key}`)                                 | `icon`                                      | THUMB, SMALL                 |
+  | Stores (`/content/stores`, `STORE_LOCATOR` `data.stores`)              | `images` (in `mediaIdsJson` order)          | MEDIUM, LARGE                |
+  | Testimonials (`/content/testimonials`)                                 | `avatar`                                    | THUMB, SMALL                 |
+
+- **Statements**: each payload resolves all of its ids in one batched statement, or none when it
+  has no id. Swatches are attribute-value configuration read by three payloads (the grid, the
+  facets, the option matrix), so they come from one cached map of every swatch image
+  (`attr:swatch:`, one statement when cold, shared by every payload in the request). In the CMS the
+  banner, store, icon, avatar and logo ids join the page's existing media statement: no new one.
+- **Invalidation**: a media write (replace, reprocess, soft or hard delete, restore, alt text, focal
+  point) looks up what references the asset and drops exactly those caches: category icons and
+  banners (`cat:tree:`, `cat:slug:`, landings under `sf:list:`), collection images (`coll:`),
+  navigation icons (`nav:`), swatches (`attr:swatch:`, listings, facets, PDPs), banners
+  (`cms:banner:`); CMS pages always. Stores and testimonials are read live outside the CMS. An
+  attribute write drops `attr:swatch:` with the rest of its caches.
+- **BACKWARD COMPATIBILITY**: additive; every `*MediaId` field is unchanged.
+- **TESTS**: every field resolves when set and is `null` when unset, deleted or not `READY`; ids
+  unchanged; one statement per payload; replacing an asset changes the URL on the next public read.
+
+**Not settable yet** (an admin task the owner must approve): the admin UI has no field for the
+category icon and banners, the collection image and banners, or `SWATCH_IMAGE` attribute values,
+and store photos are a raw "Photo IDs" box. BC-3 makes these images readable, not settable.
+
+**Known limitations**, deliberately not fixed here:
+
+- `SQUARE` is cropped by sharp's saliency detector (`position: 'attention'`,
+  `image.processor.ts`), so it ignores the admin's focal point. Harmless for the square PRIMARY
+  images the storefront brief asks for; a focal-point-aware square crop is a later change.
+- `withoutEnlargement` keeps `SQUARE` at `min(width, 800) x min(height, 800)`: a source under 800 px
+  on one side yields a non-square rendition (1000 x 700 gives 800 x 700). Product gallery images
+  cannot be that small (1024 minimum), so cards always get 800 x 800.
+
