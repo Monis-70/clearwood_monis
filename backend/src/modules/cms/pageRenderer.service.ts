@@ -2,6 +2,7 @@ import { mediaIdsIn } from '@shared/cms/blockRegistry';
 import { isBlockType, type BlockType, type DeviceKind } from '@shared/enums';
 
 import { logger } from '../../config/logger';
+import { storage } from '../../container';
 import { cmsHydrationRepository, type CmsMediaRow } from '../../repositories/cms.repository';
 import { pageRepository, type PageWithBlocks } from '../../repositories/page.repository';
 import {
@@ -77,9 +78,11 @@ export interface RenderedPage {
 function mediaDto(row: CmsMediaRow | undefined) {
   if (!row) return null;
 
+  // Resolved by the driver, never read from the column written at upload time: a base-URL or CDN
+  // change must reach every page at once.
   return {
     id: row.id,
-    url: row.url,
+    url: storage.url(row.path),
     width: row.width,
     height: row.height,
     altText: row.altText,
@@ -90,6 +93,7 @@ function mediaDto(row: CmsMediaRow | undefined) {
     sources: row.variants.map((variant) => ({
       label: variant.label,
       path: variant.path,
+      url: storage.url(variant.path),
       width: variant.width,
       height: variant.height,
       format: variant.format,
@@ -260,11 +264,38 @@ export const pageRendererService = {
       }
     }
 
-    /* Phase 2 — membership lookups, so product ids are known before cards are fetched. */
-    const [collectionMembers, categoryMembers] = await Promise.all([
+    /*
+     * Phase 2 — membership lookups (product ids before cards), and the rows blocks show directly,
+     * whose own media ids (icons, banners, avatars, logos) must reach the one media query below.
+     */
+    const [
+      collectionMembers,
+      categoryMembers,
+      categoryRows,
+      collections,
+      testimonials,
+      stores,
+      brands,
+    ] = await Promise.all([
       cmsHydrationRepository.collectionMembers([...want.collections], want.perCollection),
       cmsHydrationRepository.categoryMembers([...want.categories], want.perCategory),
+      cmsHydrationRepository.categoriesByIds([...want.categories]),
+      cmsHydrationRepository.collectionsByIds([...want.collections]),
+      want.needsTestimonials
+        ? cmsHydrationRepository.testimonials(want.testimonialLimit)
+        : Promise.resolve([]),
+      want.needsStores ? cmsHydrationRepository.stores() : Promise.resolve([]),
+      cmsHydrationRepository.brandsByIds([...want.brands]),
     ]);
+
+    for (const id of [
+      ...categoryRows.map((row) => row.iconMediaId),
+      ...collections.map((row) => row.bannerMediaId),
+      ...testimonials.map((row) => row.avatarMediaId),
+      ...brands.map((row) => row.logoMediaId),
+    ]) {
+      if (id) want.media.add(id);
+    }
 
     const byCollection = new Map<string, string[]>();
     for (const row of collectionMembers) {
@@ -284,32 +315,14 @@ export const pageRendererService = {
       for (const id of ids) want.products.add(id);
     }
 
-    /* Phase 3 — every entity the page needs, in parallel batches. */
+    /* Phase 3 — every remaining entity the page needs, in parallel batches. */
     const productIds = [...want.products];
 
-    const [
-      cards,
-      media,
-      categoryRows,
-      collections,
-      faqsById,
-      faqsByVisibility,
-      testimonials,
-      stores,
-      brands,
-      banners,
-    ] = await Promise.all([
+    const [cards, media, faqsById, faqsByVisibility, banners] = await Promise.all([
       productIds.length > 0 ? storefrontRepository.findCards(productIds) : Promise.resolve([]),
       cmsHydrationRepository.mediaByIds([...want.media]),
-      cmsHydrationRepository.categoriesByIds([...want.categories]),
-      cmsHydrationRepository.collectionsByIds([...want.collections]),
       cmsHydrationRepository.faqsByIds([...want.faqs]),
       cmsHydrationRepository.faqsByVisibility([...want.faqVisibilities], want.faqLimit),
-      want.needsTestimonials
-        ? cmsHydrationRepository.testimonials(want.testimonialLimit)
-        : Promise.resolve([]),
-      want.needsStores ? cmsHydrationRepository.stores() : Promise.resolve([]),
-      cmsHydrationRepository.brandsByIds([...want.brands]),
       want.bannerPlacements.size > 0
         ? bannerService.forPlacements([...want.bannerPlacements], device, now)
         : Promise.resolve([]),

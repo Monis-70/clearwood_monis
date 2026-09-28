@@ -19,6 +19,12 @@ Accept: application/json
 GET {{api}}/content/home?device=MOBILE
 Accept: application/json
 
+### Storefront media contract (PROJECT_CONTEXT §51, BC-1). Every media object - slides, panels,
+### items, category icons, collection banners, avatars, logos, heroMedia, seo.ogMedia - has an
+### absolute `url` from the storage driver, and every `sources[]` entry its own `url` next to `path`.
+GET {{api}}/content/home?device=DESKTOP
+Accept: application/json
+
 ### Repeat with the ETag from the response above to get a 304.
 GET {{api}}/content/home
 If-None-Match: W/"REPLACE_WITH_ETAG_FROM_ABOVE"

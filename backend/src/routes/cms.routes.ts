@@ -128,7 +128,9 @@ registry.registerPath({
   summary: 'The home page, fully hydrated',
   description:
     'Every block arrives render-ready: product blocks carry priced cards from the P6 engine for ' +
-    'the caller\u2019s customer group, media carries its source set. ETag and 304 supported.',
+    'the caller\u2019s customer group, media carries its source set. Every media object has an ' +
+    'absolute `url` and every `sources[]` entry its own `url` beside the storage `path`. ETag and ' +
+    '304 supported.',
   request: { query: contentPageQuerySchema },
   responses: {
     ...commonErrorResponses,
