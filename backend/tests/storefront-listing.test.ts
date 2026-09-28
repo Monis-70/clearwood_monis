@@ -653,6 +653,8 @@ describe('the product card', () => {
         'primaryCategorySlug',
         'primaryCategoryName',
         'image',
+        // PROJECT_CONTEXT §51 (BC-2): the card's second image for a hover crossfade.
+        'hoverImage',
         'currency',
         'pricePaise',
         'indexedMinPricePaise',

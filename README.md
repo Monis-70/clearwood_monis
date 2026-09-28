@@ -703,7 +703,7 @@ npx vitest run tests/catalog-listing-benchmark.test.ts
 | Create a price rule starting in two minutes, wait, `sort=PRICE_ASC` | within `LISTING_RECONCILE_INTERVAL_SECONDS` of its start the order follows the new price, with no admin write                  |
 | `npm run listing:reconcile` twice at once                           | one prints `"ran":true`, the other `"ran":false` (or both true, one after the other - never overlapping)                       |
 | Reserve the last unit of a variant                                  | it leaves `inStockOnly` grids at once; a release brings it back                                                                |
-| A grid page's `image.sources`                                       | SMALL and MEDIUM renditions only; the PDP gallery keeps every rendition                                                        |
+| A grid page's `image.sources`                                       | SMALL, MEDIUM and SQUARE renditions only (PROJECT_CONTEXT §51); the PDP gallery keeps every rendition                         |
 
 ## Dynamic catalog + admin catalog management — verification
 

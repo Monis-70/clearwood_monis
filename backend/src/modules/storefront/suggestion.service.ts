@@ -75,10 +75,10 @@ export const suggestionService = {
     if (productIds.length === 0) return new Map();
 
     const rows = await storefrontRepository.findCards(productIds);
-    return new Map(
-      rows
-        .filter((row) => row.media[0])
-        .map((row) => [row.id, storage.url(row.media[0]!.media.path)]),
-    );
+    const primaries = rows.flatMap((row) => {
+      const primary = row.media.find((link) => link.role === 'PRIMARY');
+      return primary ? [[row.id, storage.url(primary.media.path)] as const] : [];
+    });
+    return new Map(primaries);
   },
 };

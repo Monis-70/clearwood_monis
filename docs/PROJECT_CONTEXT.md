@@ -2418,7 +2418,7 @@ set, so the first renderer's prices reached everyone). PDPs stay keyed per custo
 
 Cards carry the SMALL and MEDIUM renditions only (`CARD_RENDITION_LABELS`, from §13's documented
 uses), in every format the ladder produced, plus the original `url`. Galleries keep the whole
-ladder. A 24-card grid page: 89 KB -> 56 KB.
+ladder. A 24-card grid page: 89 KB -> 56 KB. Since §51 cards also carry SQUARE and a `hoverImage`.
 
 ### Measured (one local machine: MySQL 8.0.46 in WSL, memory cache; not a production guarantee)
 

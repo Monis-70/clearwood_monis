@@ -172,10 +172,17 @@ const cardInclude = {
       },
     },
   },
+  // The PRIMARY (whatever its scope, as before) and the first generic HOVER, in this one statement.
   media: {
-    where: { role: 'PRIMARY' },
-    take: 1,
+    where: {
+      OR: [
+        { role: 'PRIMARY' },
+        { role: 'HOVER', variantId: null, attributeValueId: null, media: { deletedAt: null } },
+      ],
+    },
+    take: 2,
     select: {
+      role: true,
       mediaId: true,
       altText: true,
       media: {
@@ -196,7 +203,11 @@ const cardInclude = {
         },
       },
     },
-    orderBy: [{ position: 'asc' as const }],
+    orderBy: [
+      { primaryMark: 'desc' as const },
+      { position: 'asc' as const },
+      { id: 'asc' as const },
+    ],
   },
 } satisfies Prisma.ProductSelect;
 

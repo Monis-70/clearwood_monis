@@ -36,6 +36,8 @@ const CARD_KEYS = [
   'brandName',
   'compareAtPricePaise',
   'currency',
+  // PROJECT_CONTEXT §51 (BC-2): the card's second image for a hover crossfade.
+  'hoverImage',
   'id',
   'image',
   'inStock',

@@ -125,10 +125,12 @@ export const RENDITION_PRESETS: readonly RenditionPreset[] = [
 /**
  * The renditions a product CARD carries (listing, related, recently viewed, wishlist, CMS grids),
  * from the ladder's documented uses: SMALL for list rows and small cards, MEDIUM for product cards
- * (PROJECT_CONTEXT §13). Each comes in every format the ladder emitted, and the card keeps the
- * original's `url` as its last fallback. Galleries and the PDP still receive the whole ladder.
+ * (PROJECT_CONTEXT §13), and SQUARE - the only `cover` preset - so a 1:1 card frame gets a true
+ * 800 x 800 crop whatever the source ratio (§51). Each comes in every format the ladder emitted,
+ * and the card keeps the original's `url` as its last fallback. Galleries and the PDP still
+ * receive the whole ladder.
  */
-export const CARD_RENDITION_LABELS = ['SMALL', 'MEDIUM'] as const;
+export const CARD_RENDITION_LABELS = ['SMALL', 'MEDIUM', 'SQUARE'] as const;
 
 /** System media folders created by the seed; `isSystem` rows cannot be renamed or deleted. */
 export const SYSTEM_MEDIA_FOLDERS = [

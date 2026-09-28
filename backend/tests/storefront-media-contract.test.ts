@@ -1,12 +1,18 @@
+import sharp from 'sharp';
 import request from 'supertest';
 import { beforeAll, describe, expect, it } from 'vitest';
+
+import { CARD_RENDITION_LABELS } from '@shared/constants';
+import type { ProductCardDto, ProductImageDto } from '@shared/types/storefront';
 
 import { createApp } from '../src/app';
 import { prisma } from '../src/config/prisma';
 import { cache, storage } from '../src/container';
 import { CATALOG_CACHE_PREFIXES } from '../src/modules/catalog-admin/catalogCache.service';
 import { pageRendererService } from '../src/modules/cms/pageRenderer.service';
+import { mediaService } from '../src/modules/media/media.service';
 
+import { uploadGalleryImages } from './helpers/galleryImages';
 import { countQueries } from './helpers/queryCounter';
 
 /**
@@ -204,5 +210,183 @@ describe('BC-1 CMS media carries driver URLs', () => {
     expect(after.count, 'resolving these ids must reuse the page’s one media query').toBe(
       before.count,
     );
+  });
+});
+
+/* ------------------------------------------------------ BC-2: hover image on cards */
+
+async function cardsFor(ids: string[]): Promise<Map<string, ProductCardDto>> {
+  const response = await request(app).post(`${API}/catalog/products/batch`).send({ ids });
+  expect(response.status).toBe(200);
+  const cards = response.body.data as ProductCardDto[];
+  return new Map(cards.map((card) => [card.id, card]));
+}
+
+function squares(image: ProductImageDto | null): { width: number; height: number }[] {
+  return (image?.sources ?? []).filter((source) => source.label === 'SQUARE');
+}
+
+describe('BC-2 cards carry the first generic HOVER image', () => {
+  let products: {
+    id: string;
+    variantId: string;
+    attributeValueId: string;
+    primary: { id: string; mediaId: string };
+    hover: { id: string; mediaId: string };
+  }[] = [];
+
+  beforeAll(async () => {
+    const rows = await prisma.product.findMany({
+      where: {
+        status: 'ACTIVE',
+        visibility: 'PUBLIC',
+        deletedAt: null,
+        media: { some: { role: 'HOVER', variantId: null, attributeValueId: null } },
+        variants: { some: { deletedAt: null, attributeValues: { some: {} } } },
+      },
+      include: {
+        media: { orderBy: { position: 'asc' } },
+        variants: { where: { deletedAt: null }, include: { attributeValues: true } },
+      },
+      orderBy: { slug: 'asc' },
+      take: 5,
+    });
+    // G1: every case below needs its own product.
+    expect(rows).toHaveLength(5);
+
+    products = rows.map((row) => {
+      const variant = row.variants.find((entry) => entry.attributeValues.length > 0)!;
+      const primary = row.media.find((link) => link.role === 'PRIMARY')!;
+      const hover = row.media.find(
+        (link) => link.role === 'HOVER' && !link.variantId && !link.attributeValueId,
+      )!;
+      return {
+        id: row.id,
+        variantId: variant.id,
+        attributeValueId: variant.attributeValues[0]!.attributeValueId,
+        primary: { id: primary.id, mediaId: primary.mediaId },
+        hover: { id: hover.id, mediaId: hover.mediaId },
+      };
+    });
+  });
+
+  it('gives a card its PRIMARY and its generic HOVER, with the same renditions', async () => {
+    const [product] = products;
+    const card = (await cardsFor([product!.id])).get(product!.id)!;
+
+    expect(card.image?.mediaId).toBe(product!.primary.mediaId);
+    expect(card.hoverImage?.mediaId).toBe(product!.hover.mediaId);
+
+    const labels = (image: ProductImageDto) => [...new Set(image.sources.map((s) => s.label))];
+    // G1: an image with no sources would match another with none.
+    expect(card.hoverImage!.sources.length).toBeGreaterThan(0);
+    expect(labels(card.hoverImage!).sort()).toEqual(labels(card.image!).sort());
+    expectDriverUrls([card.image as MediaObject, card.hoverImage as MediaObject]);
+  });
+
+  it('gives a card without a HOVER image hoverImage: null and keeps its image', async () => {
+    const product = products[1]!;
+    await prisma.productMedia.deleteMany({ where: { productId: product.id, role: 'HOVER' } });
+
+    const card = (await cardsFor([product.id])).get(product.id)!;
+    expect(card.image?.mediaId).toBe(product.primary.mediaId);
+    expect(card.hoverImage).toBeNull();
+  });
+
+  it('never uses a variant- or colour-scoped HOVER, even at a lower position', async () => {
+    const product = products[2]!;
+    await prisma.productMedia.deleteMany({ where: { productId: product.id, role: 'HOVER' } });
+    const [scopedToVariant, scopedToColour, generic] = await readyImageIds(3);
+    await prisma.productMedia.createMany({
+      data: [
+        {
+          productId: product.id,
+          mediaId: scopedToVariant!,
+          role: 'HOVER',
+          position: 0,
+          variantId: product.variantId,
+        },
+        {
+          productId: product.id,
+          mediaId: scopedToColour!,
+          role: 'HOVER',
+          position: 0,
+          attributeValueId: product.attributeValueId,
+        },
+      ],
+    });
+
+    expect((await cardsFor([product.id])).get(product.id)!.hoverImage).toBeNull();
+
+    await prisma.productMedia.create({
+      data: { productId: product.id, mediaId: generic!, role: 'HOVER', position: 90 },
+    });
+    expect((await cardsFor([product.id])).get(product.id)!.hoverImage?.mediaId).toBe(generic);
+  });
+
+  it('skips a generic HOVER whose media was deleted, and picks by role rather than by order', async () => {
+    const product = products[3]!;
+    await prisma.media.update({
+      where: { id: product.hover.mediaId },
+      data: { deletedAt: new Date() },
+    });
+    expect((await cardsFor([product.id])).get(product.id)!.hoverImage).toBeNull();
+    await prisma.media.update({ where: { id: product.hover.mediaId }, data: { deletedAt: null } });
+
+    // No PRIMARY at all: the HOVER is not promoted into `image`.
+    await prisma.productMedia.delete({ where: { id: product.primary.id } });
+    const card = (await cardsFor([product.id])).get(product.id)!;
+    expect(card.image).toBeNull();
+    expect(card.hoverImage?.mediaId).toBe(product.hover.mediaId);
+  });
+});
+
+describe('BC-2b card images carry a SQUARE rendition', () => {
+  it('lists SQUARE among the card renditions', () => {
+    expect(CARD_RENDITION_LABELS).toContain('SQUARE');
+  });
+
+  it('is 800 x 800 for a product-sized source and never upscales a smaller one', async () => {
+    const product = await prisma.product.findFirstOrThrow({
+      where: {
+        status: 'ACTIVE',
+        visibility: 'PUBLIC',
+        deletedAt: null,
+        media: { some: { role: 'HOVER', variantId: null, attributeValueId: null } },
+      },
+      include: { media: true },
+      orderBy: { slug: 'desc' },
+    });
+    const [large] = await uploadGalleryImages(1);
+    const small = (
+      await mediaService.upload({
+        buffer: await sharp({
+          create: { width: 900, height: 600, channels: 3, background: { r: 90, g: 60, b: 40 } },
+        })
+          .jpeg()
+          .toBuffer(),
+        originalName: 'legacy-small-hover.jpg',
+        declaredMimeType: 'image/jpeg',
+      })
+    ).media;
+
+    const primary = product.media.find((link) => link.role === 'PRIMARY')!;
+    const hover = product.media.find(
+      (link) => link.role === 'HOVER' && !link.variantId && !link.attributeValueId,
+    )!;
+    await prisma.productMedia.update({ where: { id: primary.id }, data: { mediaId: large! } });
+    await prisma.productMedia.update({ where: { id: hover.id }, data: { mediaId: small.id } });
+
+    const card = (await cardsFor([product.id])).get(product.id)!;
+    const largeSquares = squares(card.image);
+    const smallSquares = squares(card.hoverImage);
+
+    // G1: one entry per emitted format, so none would pass every check below.
+    expect(largeSquares.length).toBeGreaterThan(0);
+    expect(smallSquares.length).toBeGreaterThan(0);
+    for (const square of largeSquares) expect(square).toMatchObject({ width: 800, height: 800 });
+    // sharp's withoutEnlargement keeps each side at min(source, 800): 900 x 600 gives 800 x 600,
+    // never a larger box (PROJECT_CONTEXT §51, known limitations).
+    for (const square of smallSquares) expect(square).toMatchObject({ width: 800, height: 600 });
   });
 });

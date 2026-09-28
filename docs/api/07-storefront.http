@@ -32,8 +32,13 @@ GET {{api}}/catalog/products?inStockOnly=true&limit=10
 ### 6a. (Prompt 4) The grid alone: MySQL filters, sorts and pages; send it twice and the second
 ### answer comes from the grid cache (sf:list:grid:*). Deep pages cost the same as page 1.
 ### (Prompt 5) Listings show PUBLIC and CATALOG_ONLY products; a query (`q`) shows PUBLIC and
-### SEARCH_ONLY. Cards carry the SMALL and MEDIUM renditions only - the PDP gallery keeps all.
+### SEARCH_ONLY. Cards carry the SMALL, MEDIUM and SQUARE renditions only - the PDP gallery keeps all.
 GET {{api}}/catalog/products?categorySlug=sofas&includeFacets=false&limit=24&page=3
+
+### 6b. (Storefront media contract, PROJECT_CONTEXT §51 BC-2) Every card also carries `hoverImage`:
+### the product's first generic HOVER image (no variant or colour scope, lowest position), or null.
+### Both images carry SMALL, MEDIUM and SQUARE (an 800 x 800 cover crop for the 1:1 card frame).
+GET {{api}}/catalog/products?categorySlug=sofas&includeFacets=false&limit=24
 
 ### 7. Cursor pagination for infinite scroll
 # @name page1

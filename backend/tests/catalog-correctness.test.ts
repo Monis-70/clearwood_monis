@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { CARD_RENDITION_LABELS } from '@shared/constants';
 import { applyBasisPoints } from '@shared/money';
 import { storefrontListQuerySchema } from '@shared/schemas/storefront';
 import request from 'supertest';
@@ -1111,11 +1112,11 @@ describe('card payload', () => {
       listing.body.data.items as { slug: string; image: { sources: { label: string }[] } }[]
     ).find((item) => item.slug === imaged.slug)!;
     const labels = new Set(card.image.sources.map((source) => source.label));
+    const cardLabels: readonly string[] = CARD_RENDITION_LABELS;
     expect(labels.size).toBeGreaterThan(0);
-    expect([...labels].every((label) => label === 'SMALL' || label === 'MEDIUM')).toBe(true);
+    expect([...labels].every((label) => cardLabels.includes(label))).toBe(true);
     expect(card.image.sources).toHaveLength(
-      media.variants.filter((variant) => variant.label === 'SMALL' || variant.label === 'MEDIUM')
-        .length,
+      media.variants.filter((variant) => cardLabels.includes(variant.label)).length,
     );
 
     const pdp = await request(app).get(`${API}/catalog/products/${imaged.slug}`);

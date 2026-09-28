@@ -70,6 +70,11 @@ export interface ProductCardDto {
   primaryCategorySlug: string | null;
   primaryCategoryName: string | null;
   image: ProductImageDto | null;
+  /**
+   * The first generic HOVER image (no variant or colour scope, lowest position) for a crossfade,
+   * with the same renditions as `image`; null when the product has none.
+   */
+  hoverImage: ProductImageDto | null;
   currency: 'INR';
   /** Resolved for THIS request's customer group — see `pricingBasis` on the response. */
   pricePaise: number;

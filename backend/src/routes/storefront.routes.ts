@@ -82,6 +82,9 @@ const productCardSchema = registry.register(
     ratingAvgBp: z.number().int(),
     swatches: z.array(anyObject),
     image: anyObject.nullable(),
+    hoverImage: anyObject
+      .nullable()
+      .describe('First generic HOVER image (no variant or colour scope), same renditions as image'),
   }),
 );
 

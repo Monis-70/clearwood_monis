@@ -37,8 +37,9 @@ export function toImage(item: GalleryItemDto): ProductImageDto {
   };
 }
 
-function primaryImage(row: ProductCardRow): ProductImageDto | null {
-  const link = row.media[0];
+/** By role, never by index: the card query returns the PRIMARY and the first generic HOVER. */
+function cardImage(row: ProductCardRow, role: 'PRIMARY' | 'HOVER'): ProductImageDto | null {
+  const link = row.media.find((entry) => entry.role === role);
   if (!link) return null;
 
   return {
@@ -137,7 +138,8 @@ export function toProductCard(
     brandName: row.brand?.name ?? null,
     primaryCategorySlug: primary?.slug ?? null,
     primaryCategoryName: primary?.name ?? null,
-    image: primaryImage(row),
+    image: cardImage(row, 'PRIMARY'),
+    hoverImage: cardImage(row, 'HOVER'),
     currency: 'INR',
     pricePaise: pricing.pricePaise,
     indexedMinPricePaise: pricing.indexed.minPricePaise,
