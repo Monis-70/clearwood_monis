@@ -419,5 +419,14 @@ export type NavigationItemUpdateInput = z.infer<typeof navigationItemUpdateSchem
 
 /* ----------------------------------------------------------- site settings */
 
-export const contentSettingsSchema = z.record(z.union([z.string(), z.number(), z.boolean(), z.null()]));
+/** A value may be a scalar or a list of short lines (`site.usp_lines`). Objects stay unsupported. */
+export const contentSettingsSchema = z.record(
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(z.string().trim().min(1).max(200)).max(20),
+  ]),
+);
 export type ContentSettingsInput = z.infer<typeof contentSettingsSchema>;

@@ -272,6 +272,21 @@ X-CSRF-Token: {{csrf}}
 
 { "site.contact_phone": "+91 99999 99999" }
 
+### (PROJECT_CONTEXT §51, BC-10) A list setting: up to 20 lines of 1-200 characters, trimmed.
+### GET /settings/public serves it back as the same real array.
+PUT {{admin}}/content/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "site.usp_lines": ["Made in our own workshop", "Built to order in solid wood"] }
+
+### A list for a key that holds a string is 422, not silently stringified; nothing is written.
+PUT {{admin}}/content/settings
+Content-Type: application/json
+X-CSRF-Token: {{csrf}}
+
+{ "site.contact_phone": ["+91 99999 99999"] }
+
 ### A non-content key is refused, so this screen is not a back door into payments.
 PUT {{admin}}/content/settings
 Content-Type: application/json

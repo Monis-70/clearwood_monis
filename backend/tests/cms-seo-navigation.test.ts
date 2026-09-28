@@ -311,6 +311,88 @@ describe('content settings', () => {
   });
 });
 
+/* ------------------------------------ list settings (PROJECT_CONTEXT §51, BC-10) */
+
+describe('list settings', () => {
+  const putSettings = (body: Record<string, unknown>) =>
+    request(app)
+      .put(`${ADMIN_API}/content/settings`)
+      .set('Cookie', superAdmin.header)
+      .set('X-CSRF-Token', superAdmin.csrf)
+      .send(body);
+
+  const publicSettings = async () =>
+    (await request(app).get(`${API}/settings/public`)).body.data as Record<string, unknown>;
+
+  const stored = (key: string) => prisma.appSetting.findUniqueOrThrow({ where: { key } });
+
+  it('writes site.usp_lines as a list and serves it back as a real array', async () => {
+    const before = await publicSettings();
+    // G1: the comparison of the other keys below needs a populated payload and a seeded list.
+    expect(Object.keys(before).length).toBeGreaterThan(10);
+    expect(Array.isArray(before['site.usp_lines'])).toBe(true);
+
+    const lines = ['Made in our own Bengaluru workshop', '  Solid wood, built to order  '];
+    const response = await putSettings({ 'site.usp_lines': lines });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const trimmed = ['Made in our own Bengaluru workshop', 'Solid wood, built to order'];
+    expect(response.body.data['site.usp_lines']).toEqual(trimmed);
+
+    const after = await publicSettings();
+    expect(after['site.usp_lines']).toEqual(trimmed);
+    const row = await stored('site.usp_lines');
+    expect(row.valueType).toBe('json');
+    expect(JSON.parse(row.value)).toEqual(trimmed);
+
+    const { 'site.usp_lines': _before, ...otherBefore } = before;
+    const { 'site.usp_lines': _after, ...otherAfter } = after;
+    expect(otherAfter).toEqual(otherBefore);
+  });
+
+  it('accepts 20 lines of 200 characters and refuses more, longer or empty ones', async () => {
+    const full = Array.from({ length: 20 }, (_, index) => `${index}`.padEnd(200, 'x'));
+    expect((await putSettings({ 'site.usp_lines': full })).status).toBe(200);
+    const accepted = (await stored('site.usp_lines')).value;
+
+    for (const lines of [[...full, 'one more'], ['x'.repeat(201)], ['   ']]) {
+      const response = await putSettings({ 'site.usp_lines': lines });
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    }
+    expect((await stored('site.usp_lines')).value).toBe(accepted);
+  });
+
+  it('still stores a string setting as a string', async () => {
+    const response = await putSettings({ 'site.business_hours': 'Every day, 10am to 8pm' });
+
+    expect(response.status).toBe(200);
+    expect((await publicSettings())['site.business_hours']).toBe('Every day, 10am to 8pm');
+    expect(await stored('site.business_hours')).toMatchObject({
+      valueType: 'string',
+      value: 'Every day, 10am to 8pm',
+    });
+  });
+
+  it('refuses a list for a key that is not a list, and writes nothing from that request', async () => {
+    const phone = (await stored('site.contact_phone')).value;
+    const lines = (await stored('site.usp_lines')).value;
+
+    const response = await putSettings({
+      'site.usp_lines': ['A line that must not be written'],
+      'site.contact_phone': ['+91 90000 00000'],
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.body.error.details).toEqual({
+      key: 'site.contact_phone',
+      valueType: 'string',
+    });
+    expect((await stored('site.contact_phone')).value).toBe(phone);
+    expect((await stored('site.usp_lines')).value).toBe(lines);
+  });
+});
+
 /* -------------------------------------------------------------------- SEO */
 
 describe('sitemap and robots', () => {

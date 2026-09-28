@@ -426,6 +426,14 @@ export const siteSettingsService = {
     const existing = await settingWriteRepository.findByKeys(Object.keys(input));
     const typeOf = new Map(existing.map((row) => [row.key, row]));
 
+    // Checked before anything is written: a refused request changes nothing.
+    for (const [key, value] of Object.entries(input)) {
+      const valueType = typeOf.get(key)?.valueType ?? null;
+      if (Array.isArray(value) && valueType !== 'json') {
+        throw AppError.validation(`"${key}" is not a list setting`, { key, valueType });
+      }
+    }
+
     for (const [key, value] of Object.entries(input)) {
       const current = typeOf.get(key);
       const valueType =
