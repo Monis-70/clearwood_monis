@@ -1,3 +1,4 @@
+import { PUBLIC_IMAGE_RENDITIONS } from '@shared/constants';
 import type {
   CmsReorderInput,
   ContentSettingsInput,
@@ -8,6 +9,7 @@ import type {
   TestimonialCreateInput,
   TestimonialUpdateInput,
 } from '@shared/schemas/cms';
+import type { PublicImageDto } from '@shared/types/storefront';
 
 import { prisma } from '../../config/prisma';
 import {
@@ -20,6 +22,7 @@ import { updateVersioned } from '../../repositories/versioned';
 import { settingService } from '../../services/setting.service';
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
+import { publicImageService, type PublicImages } from '../media/publicImage.service';
 import { catalogCacheService } from '../catalog-admin/catalogCache.service';
 import { mediaUsageService } from '../media/media-usage.service';
 
@@ -33,6 +36,17 @@ const MAX_NAV_DEPTH = 3;
 export const testimonialService = {
   list(filter: { featured?: boolean; includeInactive?: boolean } = {}) {
     return testimonialRepository.list(filter);
+  },
+
+  /** The public list: every testimonial with its avatar resolved (PROJECT_CONTEXT §51). */
+  async listPublic(filter: { featured?: boolean } = {}) {
+    const rows = await testimonialRepository.list(filter);
+    const labels = PUBLIC_IMAGE_RENDITIONS.avatar;
+    const images = await publicImageService.load([
+      { ids: rows.map((row) => row.avatarMediaId), labels },
+    ]);
+
+    return rows.map((row) => ({ ...row, avatar: images.get(row.avatarMediaId, labels) }));
   },
 
   async get(id: string) {
@@ -101,6 +115,33 @@ export const testimonialService = {
 export const storeService = {
   list(includeInactive = false) {
     return storeRepository.list(includeInactive);
+  },
+
+  /** The public list: every store with its photos resolved (PROJECT_CONTEXT §51). */
+  async listPublic() {
+    const rows = await storeRepository.list(false);
+    const images = await publicImageService.load([
+      {
+        ids: rows.flatMap((row) => this.mediaIdsOf(row)),
+        labels: PUBLIC_IMAGE_RENDITIONS.storePhoto,
+      },
+    ]);
+
+    return rows.map((row) => this.withImages(row, images));
+  },
+
+  mediaIdsOf(store: { mediaIdsJson: string | null }): string[] {
+    return idList.parseOrNull(store.mediaIdsJson) ?? [];
+  },
+
+  /** In `mediaIdsJson` order; a photo that is deleted or not READY is left out. */
+  withImages<T extends { mediaIdsJson: string | null }>(store: T, images: PublicImages) {
+    return {
+      ...store,
+      images: this.mediaIdsOf(store)
+        .map((id) => images.get(id, PUBLIC_IMAGE_RENDITIONS.storePhoto))
+        .filter((image): image is PublicImageDto => image !== null),
+    };
   },
 
   async get(id: string) {

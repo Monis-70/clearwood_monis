@@ -21,6 +21,7 @@ import {
   type ProductCardRow,
 } from '../../repositories/storefront.repository';
 import { AppError } from '../../utils/AppError';
+import { publicImageService } from '../media/publicImage.service';
 import { pricingContextLoader } from '../pricing/pricingContext.loader';
 import { pricingFacade } from '../pricing/pricing.facade';
 
@@ -310,9 +311,10 @@ export const productQueryService = {
       .filter((row): row is ProductCardRow => row !== undefined);
     const indexed = new Map(rows.map((row) => [row.id, row]));
 
-    const [displayPrices, basis] = await Promise.all([
+    const [displayPrices, basis, swatchImages] = await Promise.all([
       this.resolveDisplayPrices(ordered, identity),
       this.pricingBasis(identity.customerId),
+      publicImageService.swatchesForCards(ordered),
     ]);
 
     const items = ordered.map((row) =>
@@ -327,6 +329,7 @@ export const productQueryService = {
           ...(relevance.has(row.id) ? { relevanceScore: relevance.get(row.id)! } : {}),
         },
         prepared.merchandising,
+        swatchImages,
       ),
     );
 

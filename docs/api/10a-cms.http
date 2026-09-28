@@ -35,7 +35,9 @@ GET {{api}}/content/pages/privacy-policy
 ### A draft or scheduled-for-later page is 404, never 403.
 GET {{api}}/content/pages/not-a-real-page
 
-### Banners for the hero placement.
+### Banners for the hero placement. (PROJECT_CONTEXT §51, BC-3) Each banner carries `media` and
+### `mobileMedia` (DESKTOP, MOBILE, LARGE, XLARGE) beside `mediaId` / `mobileMediaId`; so do the
+### HERO_SLIDER block's `data.banners` in /content/home.
 GET {{api}}/content/banners?placement=HOME_HERO&device=DESKTOP
 
 ### The announcement bar showing right now, or null.
@@ -62,7 +64,8 @@ GET {{api}}/content/help/help-delivery
 ### One help article. bodyHtml was rendered and sanitised at WRITE time.
 GET {{api}}/content/help/articles/what-to-check-on-arrival
 
-### Testimonials and showrooms.
+### Testimonials and showrooms. (BC-3) Each testimonial has `avatar`; each store `images`, in
+### `mediaIdsJson` order - the STORE_LOCATOR block's stores too.
 GET {{api}}/content/testimonials?featured=true
 
 ###

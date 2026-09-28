@@ -3,6 +3,7 @@ import type { RecentlyViewedDto } from '@shared/types/cart';
 import { env } from '../../config/env';
 import { recentlyViewedRepository } from '../../repositories/cart.repository';
 import { storefrontRepository } from '../../repositories/storefront.repository';
+import { publicImageService } from '../media/publicImage.service';
 import { toProductCard } from '../storefront/card.mapper';
 import { loadMerchandising } from '../storefront/merchandising';
 import { productQueryService } from '../storefront/productQuery.service';
@@ -34,10 +35,11 @@ export const recentlyViewedService = {
     const ids = rows.map((row) => row.productId);
     const cards = await storefrontRepository.findCards(ids);
 
-    const [prices, indexed, merchandising] = await Promise.all([
+    const [prices, indexed, merchandising, swatchImages] = await Promise.all([
       productQueryService.resolveDisplayPrices(cards, { customerId: owner.customerId }),
       productQueryService.priceIndex(ids),
       loadMerchandising(),
+      publicImageService.swatchesForCards(cards),
     ]);
 
     const byId = new Map(
@@ -50,6 +52,7 @@ export const recentlyViewedService = {
             indexed: indexed.get(card.id) ?? { minPricePaise: null, maxPricePaise: null },
           },
           merchandising,
+          swatchImages,
         ),
       ]),
     );

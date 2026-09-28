@@ -19,6 +19,7 @@ import { AppError } from '../../utils/AppError';
 import { isVariantAvailable, unreservedUnits } from '../catalog-admin/availability';
 import { STOREFRONT_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
 import { galleryResolver } from '../media/gallery.resolver';
+import { publicImageService } from '../media/publicImage.service';
 import { pricingFacade } from '../pricing/pricing.facade';
 import { pricingContextLoader } from '../pricing/pricingContext.loader';
 import { shippingService } from '../pricing/shipping.service';
@@ -334,6 +335,7 @@ export const pdpService = {
     const prices = await productQueryService.resolveDisplayPrices(rows, identity);
     const indexed = await productQueryService.priceIndex(wanted);
     const merchandising = context ?? (await loadMerchandising());
+    const swatchImages = await publicImageService.swatchesForCards(rows);
 
     const cards = new Map(
       rows.map((row) => [
@@ -345,6 +347,7 @@ export const pdpService = {
             indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
           },
           merchandising,
+          swatchImages,
         ),
       ]),
     );

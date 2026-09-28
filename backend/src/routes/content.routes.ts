@@ -48,6 +48,8 @@ registry.registerPath({
   path: `${API_PREFIX}/content/testimonials`,
   tags: ['Content'],
   summary: 'Customer testimonials',
+  description:
+    'Each with `avatar`: a PublicImage (THUMB, SMALL) or null (PROJECT_CONTEXT \u00a751).',
   request: { query: z.object({ featured: z.coerce.boolean().optional() }) },
   responses: {
     ...commonErrorResponses,
@@ -60,6 +62,9 @@ registry.registerPath({
   path: `${API_PREFIX}/content/stores`,
   tags: ['Content'],
   summary: 'Showroom locations and opening hours',
+  description:
+    'Each with `images`: PublicImages (MEDIUM, LARGE) in `mediaIdsJson` order; a deleted or ' +
+    'unprocessed photo is left out (PROJECT_CONTEXT \u00a751).',
   responses: {
     ...commonErrorResponses,
     200: jsonContent(successBodySchema(z.array(anyObject)), 'Stores'),

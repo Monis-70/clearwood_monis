@@ -4,6 +4,7 @@ import type { ProductForIndex } from '../../repositories/storefront.repository';
 import { storefrontRepository } from '../../repositories/storefront.repository';
 import { AppError } from '../../utils/AppError';
 import { isVariantAvailable } from '../catalog-admin/availability';
+import { publicImageService, swatchImageOf } from '../media/publicImage.service';
 import { pricingFacade } from '../pricing/pricing.facade';
 
 /**
@@ -39,7 +40,14 @@ export const optionAvailabilityService = {
     }));
 
     /* Price deltas are quoted by the P6 engine, one call for every variant plus the default. */
-    const deltas = await this.priceDeltas(product.id, variants, defaultVariant?.id ?? null);
+    const [deltas, swatchImages] = await Promise.all([
+      this.priceDeltas(product.id, variants, defaultVariant?.id ?? null),
+      publicImageService.swatchesFor(
+        variants.flatMap((variant) =>
+          variant.attributeValues.map((link) => link.attributeValue.swatchMediaId),
+        ),
+      ),
+    ]);
 
     const byAttribute = new Map<
       string,
@@ -82,6 +90,7 @@ export const optionAvailabilityService = {
           description: link.attributeValue.description,
           colorHex: link.attributeValue.colorHex,
           swatchMediaId: link.attributeValue.swatchMediaId,
+          swatchImage: swatchImageOf(swatchImages, link.attributeValue.swatchMediaId),
           isAvailable: true,
           isInStock: inStock,
           variantIds: [variant.id],

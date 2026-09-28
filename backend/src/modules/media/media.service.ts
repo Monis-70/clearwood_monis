@@ -42,9 +42,11 @@ import { validateUpload } from './upload.validator';
 const tagsColumn = jsonColumn<string[]>(undefined, 'Media.tagsJson');
 
 async function invalidateUsersOf(mediaIds: string[]): Promise<void> {
-  await catalogCacheService.invalidateMedia(
-    await productMediaRepository.productSlugsForMedia(mediaIds),
-  );
+  const [productSlugs, references] = await Promise.all([
+    productMediaRepository.productSlugsForMedia(mediaIds),
+    mediaRepository.findReferences(mediaIds),
+  ]);
+  await catalogCacheService.invalidateMedia(productSlugs, references);
 }
 
 export interface UploadInput {
@@ -414,7 +416,10 @@ export const mediaService = {
     }
 
     // Read first: a forced detach and the delete cascade both remove the rows naming the users.
-    const productSlugs = await productMediaRepository.productSlugsForMedia([id]);
+    const [productSlugs, references] = await Promise.all([
+      productMediaRepository.productSlugsForMedia([id]),
+      mediaRepository.findReferences([id]),
+    ]);
     const detachedUsages = usages.length > 0 ? await mediaUsageService.detachMedia(id) : 0;
     const keys = [existing.path, ...existing.variants.map((variant) => variant.path)];
     const filesDeleted = await storage.deleteMany(
@@ -422,7 +427,7 @@ export const mediaService = {
     );
 
     await mediaRepository.hardDelete(id);
-    await catalogCacheService.invalidateMedia(productSlugs);
+    await catalogCacheService.invalidateMedia(productSlugs, references);
     return { detachedUsages, filesDeleted };
   },
 

@@ -27,11 +27,11 @@ import { created, noContent, ok } from '../utils/response';
 export const publicContentController = {
   async testimonials(req: Request, res: Response): Promise<void> {
     const featured = req.query.featured === 'true' ? true : undefined;
-    ok(res, await testimonialService.list({ featured }));
+    ok(res, await testimonialService.listPublic({ featured }));
   },
 
   async stores(_req: Request, res: Response): Promise<void> {
-    ok(res, await storeService.list());
+    ok(res, await storeService.listPublic());
   },
 };
 

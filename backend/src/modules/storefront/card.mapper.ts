@@ -5,6 +5,7 @@ import type { ProductCardDto, ProductImageDto, ProductSwatchDto } from '@shared/
 import { storage } from '../../container';
 import type { ProductCardRow } from '../../repositories/storefront.repository';
 import { isVariantAvailable } from '../catalog-admin/availability';
+import { swatchImageOf, type SwatchImages } from '../media/publicImage.service';
 
 import {
   badgesFor,
@@ -68,7 +69,7 @@ function cardImage(row: ProductCardRow, role: 'PRIMARY' | 'HOVER'): ProductImage
 }
 
 /** One chip per colour-ish variant-defining value, with its own stock state. */
-function swatches(row: ProductCardRow): ProductSwatchDto[] {
+function swatches(row: ProductCardRow, images: SwatchImages): ProductSwatchDto[] {
   const byValue = new Map<string, ProductSwatchDto>();
 
   for (const variant of row.variants) {
@@ -88,6 +89,7 @@ function swatches(row: ProductCardRow): ProductSwatchDto[] {
         label: link.attributeValue.label,
         colorHex: link.attributeValue.colorHex,
         swatchMediaId: link.attributeValue.swatchMediaId,
+        swatchImage: swatchImageOf(images, link.attributeValue.swatchMediaId),
         isInStock: available,
       });
     }
@@ -111,10 +113,12 @@ export interface CardPricing {
   relevanceScore?: number;
 }
 
+/** `swatchImages` is publicImageService.swatchesForCards() for the rows being mapped. */
 export function toProductCard(
   row: ProductCardRow,
   pricing: CardPricing,
   merchandising: MerchandisingContext,
+  swatchImages: SwatchImages,
 ): ProductCardDto {
   const primary = row.categories[0]?.category ?? null;
   const { inStock, stockStatus } = stockOf(row);
@@ -176,7 +180,7 @@ export function toProductCard(
       merchandising,
     ),
     variantCount: row.variants.length,
-    swatches: swatches(row),
+    swatches: swatches(row, swatchImages),
     ...(pricing.relevanceScore === undefined ? {} : { relevanceScore: pricing.relevanceScore }),
   };
 }

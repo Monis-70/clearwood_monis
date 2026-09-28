@@ -41,6 +41,13 @@ export interface ProductImageDto {
   sources: ImageSourceDto[];
 }
 
+/**
+ * Any image a public payload resolves from a media id (category, collection, banner, swatch,
+ * navigation, store, testimonial): the card image shape, with the renditions that slot carries
+ * (`PUBLIC_IMAGE_RENDITIONS`). Null when the id is unset, or the media is deleted or not READY.
+ */
+export type PublicImageDto = ProductImageDto;
+
 /* --------------------------------------------------------------- listing */
 
 export interface ProductSwatchDto {
@@ -48,6 +55,7 @@ export interface ProductSwatchDto {
   label: string;
   colorHex: string | null;
   swatchMediaId: string | null;
+  swatchImage: PublicImageDto | null;
   isInStock: boolean;
 }
 
@@ -117,6 +125,7 @@ export interface FacetValueDto {
   selected: boolean;
   colorHex: string | null;
   swatchMediaId: string | null;
+  swatchImage: PublicImageDto | null;
 }
 
 export interface PriceBucketDto {
@@ -182,6 +191,7 @@ export interface OptionValueAvailabilityDto {
   description: string | null;
   colorHex: string | null;
   swatchMediaId: string | null;
+  swatchImage: PublicImageDto | null;
   isAvailable: boolean;
   isInStock: boolean;
   variantIds: string[];
@@ -323,6 +333,8 @@ export interface CategoryLandingDto {
     shortDescription: string | null;
     bannerMediaId: string | null;
     mobileBannerMediaId: string | null;
+    bannerMedia: PublicImageDto | null;
+    mobileBannerMedia: PublicImageDto | null;
   };
   breadcrumbs: BreadcrumbDto[];
   children: {
@@ -332,6 +344,8 @@ export interface CategoryLandingDto {
     kind: CategoryKind;
     leadFormKey: string | null;
     productCount: number;
+    iconMediaId: string | null;
+    iconMedia: PublicImageDto | null;
   }[];
   facetDefaults: FacetDto[];
   featured: ProductCardDto[];
@@ -349,6 +363,9 @@ export interface CollectionDto {
   imageMediaId: string | null;
   bannerMediaId: string | null;
   mobileBannerMediaId: string | null;
+  image: PublicImageDto | null;
+  banner: PublicImageDto | null;
+  mobileBanner: PublicImageDto | null;
   productCount: number;
   startsAt: string | null;
   endsAt: string | null;

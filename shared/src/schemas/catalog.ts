@@ -55,6 +55,28 @@ export const navigationMenuKeySchema = z.enum(NAVIGATION_MENU_KEYS);
 
 /* ------------------------------------------------------------- media DTOs */
 
+/** `PublicImageDto` (= `ProductImageDto`): an image resolved from a media id, URLs included. */
+export const publicImageDtoSchema = z.object({
+  mediaId: idSchema,
+  url: z.string(),
+  alt: z.string(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+  blurhash: z.string().nullable(),
+  lqip: z.string().nullable(),
+  dominantColorHex: z.string().nullable(),
+  focalPoint: z.object({ x: z.number().int(), y: z.number().int() }).nullable(),
+  sources: z.array(
+    z.object({
+      label: z.string(),
+      format: z.string(),
+      url: z.string(),
+      width: z.number().int(),
+      height: z.number().int(),
+    }),
+  ),
+});
+
 export const mediaDtoSchema = z.object({
   id: idSchema,
   kind: mediaKindSchema,
@@ -139,6 +161,7 @@ const categoryNodeBaseSchema = z.object({
   isFeatured: z.boolean(),
   shortDescription: z.string().nullable(),
   iconMediaId: idSchema.nullable(),
+  iconMedia: publicImageDtoSchema.nullable(),
   productCountCache: z.number().int(),
 });
 
@@ -153,6 +176,8 @@ export const categoryDetailSchema = categoryNodeBaseSchema.extend({
   description: z.string().nullable(),
   bannerMediaId: idSchema.nullable(),
   mobileBannerMediaId: idSchema.nullable(),
+  bannerMedia: publicImageDtoSchema.nullable(),
+  mobileBannerMedia: publicImageDtoSchema.nullable(),
   seoTitle: z.string().nullable(),
   seoDescription: z.string().nullable(),
   seoKeywords: z.string().nullable(),
@@ -251,6 +276,7 @@ const navigationNodeBaseSchema = z.object({
   collectionSlug: slugSchema.nullable(),
   leadFormKey: z.string().nullable(),
   iconMediaId: idSchema.nullable(),
+  icon: publicImageDtoSchema.nullable(),
   menuColumn: z.number().int().nullable(),
   openInNewTab: z.boolean(),
 });

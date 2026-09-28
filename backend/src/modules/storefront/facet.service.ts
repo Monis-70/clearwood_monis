@@ -13,6 +13,7 @@ import {
 } from '../../repositories/listing.repository';
 import { categoryAttributeService } from '../../services/categoryAttribute.service';
 import { STOREFRONT_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
+import { publicImageService, swatchImageOf } from '../media/publicImage.service';
 
 import { withoutDimension, type ResolvedScope } from './listing.filters';
 
@@ -92,6 +93,7 @@ function option(value: string, label: string, count: number, selected: boolean):
     selected,
     colorHex: null,
     swatchMediaId: null,
+    swatchImage: null,
   };
 }
 
@@ -133,25 +135,36 @@ export const facetService = {
       return pending;
     };
 
-    const [unselectedCounts, selectedCounts, brandScan, priceScan, availability, rating, flags] =
-      await Promise.all([
-        listingRepository.attributeValueCounts(
-          filter,
-          unselected.map((attribute) => attribute.id),
+    const [
+      unselectedCounts,
+      selectedCounts,
+      brandScan,
+      priceScan,
+      availability,
+      rating,
+      flags,
+      swatchImages,
+    ] = await Promise.all([
+      listingRepository.attributeValueCounts(
+        filter,
+        unselected.map((attribute) => attribute.id),
+      ),
+      Promise.all(
+        selected.map((attribute) =>
+          listingRepository.attributeValueCounts(withoutDimension(filter, attribute.id), [
+            attribute.id,
+          ]),
         ),
-        Promise.all(
-          selected.map((attribute) =>
-            listingRepository.attributeValueCounts(withoutDimension(filter, attribute.id), [
-              attribute.id,
-            ]),
-          ),
-        ),
-        scan('brand', scope.brandIds.length > 0),
-        scan('price', hasPriceFilter),
-        scan('availability', query.inStockOnly === true).then((result) => result.dims),
-        scan('rating', query.ratingMin !== undefined).then((result) => result.dims),
-        scan('flags', hasFlagFilter).then((result) => result.dims),
-      ]);
+      ),
+      scan('brand', scope.brandIds.length > 0),
+      scan('price', hasPriceFilter),
+      scan('availability', query.inStockOnly === true).then((result) => result.dims),
+      scan('rating', query.ratingMin !== undefined).then((result) => result.dims),
+      scan('flags', hasFlagFilter).then((result) => result.dims),
+      publicImageService.swatchesFor(
+        attributes.flatMap((attribute) => attribute.values.map((value) => value.swatchMediaId)),
+      ),
+    ]);
     const brands = brandScan.brands;
     const price = priceScan.histogram;
 
@@ -175,6 +188,7 @@ export const facetService = {
           selected: chosen.includes(value.id),
           colorHex: value.colorHex,
           swatchMediaId: value.swatchMediaId,
+          swatchImage: swatchImageOf(swatchImages, value.swatchMediaId),
         };
       });
 

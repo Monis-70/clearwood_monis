@@ -2243,6 +2243,7 @@ and pincode lookups now go through `wrap()` too.
 Media invalidation is targeted: a gallery write drops the owning product's `sf:pdp:{slug}:`,
 listings, suggestions and CMS pages; an asset write drops the same for every product using it
 (looked up before a hard delete), plus banners; an unused asset drops only CMS pages and banners.
+Since §51 an asset write also drops the category, navigation and swatch payloads that resolve it.
 
 ### Listing architecture
 
@@ -2784,33 +2785,41 @@ unset id. Every URL comes from `storage.url()`. Which renditions each slot carri
 - **WHY**: public DTOs returned ids no public endpoint resolved.
 - **RESPONSE CHANGE** (a sibling next to every existing id; no id changed):
 
-  | DTO (endpoint)                                                         | New fields                                  | Renditions                   |
-  | ---------------------------------------------------------------------- | ------------------------------------------- | ---------------------------- |
-  | `CategoryLandingDto.category` (`/catalog/categories/{slug}/landing`)   | `bannerMedia`, `mobileBannerMedia`          | DESKTOP, MOBILE, LARGE, XLARGE |
-  | `CategoryLandingDto.children[]`                                        | `iconMediaId`, `iconMedia`                  | SMALL, MEDIUM                |
-  | `CategoryNode` (`/catalog/categories/tree`, detail children)           | `iconMedia`                                 | THUMB, SMALL                 |
-  | `CategoryDetail` (`/catalog/categories/{slug}`)                        | `bannerMedia`, `mobileBannerMedia`          | DESKTOP, MOBILE, LARGE, XLARGE |
-  | `CollectionDto` (`/catalog/collections`, `/catalog/collections/{slug}`) | `image` / `banner`, `mobileBanner`         | MEDIUM, LARGE / DESKTOP, MOBILE, LARGE |
-  | Banner (`/content/banners`, `HERO_SLIDER` `data.banners`)              | `media`, `mobileMedia`                      | DESKTOP, MOBILE, LARGE, XLARGE |
-  | `ProductSwatchDto`, `FacetValueDto`, `OptionValueAvailabilityDto`      | `swatchImage`                               | THUMB                        |
-  | `NavigationNode` (`/navigation/{key}`)                                 | `icon`                                      | THUMB, SMALL                 |
-  | Stores (`/content/stores`, `STORE_LOCATOR` `data.stores`)              | `images` (in `mediaIdsJson` order)          | MEDIUM, LARGE                |
-  | Testimonials (`/content/testimonials`)                                 | `avatar`                                    | THUMB, SMALL                 |
+  | DTO (endpoint)                                                          | New fields                         | Renditions                             |
+  | ----------------------------------------------------------------------- | ---------------------------------- | -------------------------------------- |
+  | `CategoryLandingDto.category` (`/catalog/categories/{slug}/landing`)    | `bannerMedia`, `mobileBannerMedia` | DESKTOP, MOBILE, LARGE, XLARGE         |
+  | `CategoryLandingDto.children[]`                                         | `iconMediaId`, `iconMedia`         | SMALL, MEDIUM                          |
+  | `CategoryNode` (`/catalog/categories/tree`, a detail and its children)  | `iconMedia`                        | THUMB, SMALL                           |
+  | `CategoryDetail` (`/catalog/categories/{slug}`)                         | `bannerMedia`, `mobileBannerMedia` | DESKTOP, MOBILE, LARGE, XLARGE         |
+  | `CollectionDto` (`/catalog/collections`, `/catalog/collections/{slug}`) | `image` / `banner`, `mobileBanner` | MEDIUM, LARGE / DESKTOP, MOBILE, LARGE |
+  | Banner (`/content/banners`, `HERO_SLIDER` `data.banners`)               | `media`, `mobileMedia`             | DESKTOP, MOBILE, LARGE, XLARGE         |
+  | `ProductSwatchDto`, `FacetValueDto`, `OptionValueAvailabilityDto`       | `swatchImage`                      | THUMB                                  |
+  | `NavigationNode` (`/navigation/{key}`)                                  | `icon`                             | THUMB, SMALL                           |
+  | Stores (`/content/stores`, `STORE_LOCATOR` `data.stores`)               | `images` (in `mediaIdsJson` order) | MEDIUM, LARGE                          |
+  | Testimonials (`/content/testimonials`)                                  | `avatar`                           | THUMB, SMALL                           |
 
 - **Statements**: each payload resolves all of its ids in one batched statement, or none when it
   has no id. Swatches are attribute-value configuration read by three payloads (the grid, the
   facets, the option matrix), so they come from one cached map of every swatch image
   (`attr:swatch:`, one statement when cold, shared by every payload in the request). In the CMS the
   banner, store, icon, avatar and logo ids join the page's existing media statement: no new one.
+  A landing or a collection page needs its own images AND the swatch map for its cards and facets,
+  so it resolves its images first with `loadWithSwatches`: while the map is cold, that one
+  statement also reads it (flagged `isSwatch`) and the cards and facets join it. Every response
+  therefore adds at most one statement (`tests/storefront-media-contract.test.ts` measures every
+  path).
 - **Invalidation**: a media write (replace, reprocess, soft or hard delete, restore, alt text, focal
-  point) looks up what references the asset and drops exactly those caches: category icons and
-  banners (`cat:tree:`, `cat:slug:`, landings under `sf:list:`), collection images (`coll:`),
-  navigation icons (`nav:`), swatches (`attr:swatch:`, listings, facets, PDPs), banners
-  (`cms:banner:`); CMS pages always. Stores and testimonials are read live outside the CMS. An
-  attribute write drops `attr:swatch:` with the rest of its caches.
-- **BACKWARD COMPATIBILITY**: additive; every `*MediaId` field is unchanged.
-- **TESTS**: every field resolves when set and is `null` when unset, deleted or not `READY`; ids
-  unchanged; one statement per payload; replacing an asset changes the URL on the next public read.
+  point) asks which cached references resolve the asset (`mediaRepository.findReferences`: three
+  one-row reads) and drops exactly those payloads: category icons and banners (`cat:tree:`,
+  `cat:slug:`, landings under `sf:list:`), navigation icons (`nav:`), swatches (`attr:swatch:`,
+  listings, facets, PDPs); CMS pages and `cms:banner:` always, as before. Collections, banners,
+  stores and testimonials are read live outside the CMS. An attribute write drops `attr:swatch:`
+  with the rest of its caches.
+- **BACKWARD COMPATIBILITY**: additive; every `*MediaId` field is unchanged. `toProductCard` takes
+  the swatch map as a fourth argument (`publicImageService.swatchesForCards`).
+- **TESTS**: every field resolves when set and is `null` when unset, deleted or not `READY`, with
+  exactly its slot's renditions; ids unchanged; the statements each path adds; replacing, deleting
+  and restoring an asset show on the next public read without a manual cache drop.
 
 **Not settable yet** (an admin task the owner must approve): the admin UI has no field for the
 category icon and banners, the collection image and banners, or `SWATCH_IMAGE` attribute values,
@@ -2824,4 +2833,3 @@ and store photos are a raw "Photo IDs" box. BC-3 makes these images readable, no
 - `withoutEnlargement` keeps `SQUARE` at `min(width, 800) x min(height, 800)`: a source under 800 px
   on one side yields a non-square rendition (1000 x 700 gives 800 x 700). Product gallery images
   cannot be that small (1024 minimum), so cards always get 800 x 800.
-

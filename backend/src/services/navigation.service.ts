@@ -1,7 +1,9 @@
+import { PUBLIC_IMAGE_RENDITIONS } from '@shared/constants';
 import type { NavigationItemType, NavigationMenuKey } from '@shared/enums';
 import type { NavigationMenuDto, NavigationNode } from '@shared/types/catalog';
 
 import { cache } from '../container';
+import { publicImageService, type PublicImages } from '../modules/media/publicImage.service';
 import {
   navigationRepository,
   type NavigationItemRow,
@@ -30,7 +32,7 @@ function resolveUrl(row: NavigationItemRow): string | null {
   }
 }
 
-function toNode(row: NavigationItemRow): NavigationNode {
+function toNode(row: NavigationItemRow, images: PublicImages): NavigationNode {
   return {
     id: row.id,
     label: row.label,
@@ -44,15 +46,16 @@ function toNode(row: NavigationItemRow): NavigationNode {
     collectionSlug: row.collection?.slug ?? null,
     leadFormKey: row.leadFormKey,
     iconMediaId: row.iconMediaId,
+    icon: images.get(row.iconMediaId, PUBLIC_IMAGE_RENDITIONS.icon),
     menuColumn: row.menuColumn,
     openInNewTab: row.openInNewTab,
     children: [],
   };
 }
 
-function nest(rows: NavigationItemRow[]): NavigationNode[] {
+function nest(rows: NavigationItemRow[], images: PublicImages): NavigationNode[] {
   const nodes = new Map<string, NavigationNode>();
-  for (const row of rows) nodes.set(row.id, toNode(row));
+  for (const row of rows) nodes.set(row.id, toNode(row, images));
 
   const roots: NavigationNode[] = [];
   for (const row of rows) {
@@ -94,7 +97,11 @@ export const navigationService = {
         return true;
       });
 
-      return { key: menu.key as NavigationMenuKey, name: menu.name, items: nest(visible) };
+      const images = await publicImageService.load([
+        { ids: visible.map((row) => row.iconMediaId), labels: PUBLIC_IMAGE_RENDITIONS.icon },
+      ]);
+
+      return { key: menu.key as NavigationMenuKey, name: menu.name, items: nest(visible, images) };
     });
   },
 };

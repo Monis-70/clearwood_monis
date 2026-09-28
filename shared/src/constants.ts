@@ -132,6 +132,24 @@ export const RENDITION_PRESETS: readonly RenditionPreset[] = [
  */
 export const CARD_RENDITION_LABELS = ['SMALL', 'MEDIUM', 'SQUARE'] as const;
 
+/**
+ * The renditions each public image slot carries when a payload resolves a media id into a
+ * `PublicImageDto` (PROJECT_CONTEXT §51). One place, so a slot's ladder is a one-line change.
+ */
+export const PUBLIC_IMAGE_RENDITIONS = {
+  /** Category and collection banners, banner placements. */
+  banner: ['DESKTOP', 'MOBILE', 'LARGE', 'XLARGE'],
+  collectionBanner: ['DESKTOP', 'MOBILE', 'LARGE'],
+  collectionImage: ['MEDIUM', 'LARGE'],
+  /** Category tiles on a landing page. */
+  categoryTile: ['SMALL', 'MEDIUM'],
+  /** Category tree and navigation icons. */
+  icon: ['THUMB', 'SMALL'],
+  swatch: ['THUMB'],
+  storePhoto: ['MEDIUM', 'LARGE'],
+  avatar: ['THUMB', 'SMALL'],
+} as const satisfies Record<string, readonly string[]>;
+
 /** System media folders created by the seed; `isSystem` rows cannot be renamed or deleted. */
 export const SYSTEM_MEDIA_FOLDERS = [
   'products',

@@ -63,13 +63,30 @@ GET {{api}}/catalog/deals?limit=8
 GET {{api}}/catalog/featured?limit=8
 
 ### 10. Category landing page: banner, children, facet defaults, featured products, SEO
+### (PROJECT_CONTEXT §51, BC-3) `category.bannerMedia` / `mobileBannerMedia` and each child's
+### `iconMedia` are resolved images (URLs included) or null, next to the unchanged media ids.
 GET {{api}}/catalog/categories/sofas/landing
 
-### 11. Collections — CollectionProduct is populated by the rule evaluator, not by hand
+### 11. Collections — CollectionProduct is populated by the rule evaluator, not by hand.
+### (BC-3) Each collection carries `image`, `banner` and `mobileBanner` beside the media ids.
 GET {{api}}/catalog/collections
 
 ###
 GET {{api}}/catalog/collections/best-sellers?limit=12
+
+### 11a. (BC-3) The tree's `iconMedia` and a category detail's `iconMedia`, `bannerMedia` and
+### `mobileBannerMedia`; the MAIN menu's `icon` per item.
+GET {{api}}/catalog/categories/tree
+
+###
+GET {{api}}/catalog/categories/sofas
+
+###
+GET {{api}}/navigation/MAIN
+
+### 11b. (BC-3) Swatch images: card `swatches[].swatchImage`, facet `values[].swatchImage` and the
+### option matrix's `values[].swatchImage` - one THUMB image per value, from one shared map.
+GET {{api}}/catalog/filters?categorySlug=sofas
 
 ### ------------------------------------------------------------- search
 

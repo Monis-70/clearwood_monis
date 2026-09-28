@@ -80,7 +80,9 @@ const productCardSchema = registry.register(
     inStock: z.boolean(),
     stockStatus: z.string(),
     ratingAvgBp: z.number().int(),
-    swatches: z.array(anyObject),
+    swatches: z
+      .array(anyObject)
+      .describe('Each swatch: swatchMediaId and swatchImage (a PublicImage with THUMB, or null)'),
     image: anyObject.nullable(),
     hoverImage: anyObject
       .nullable()
@@ -95,7 +97,9 @@ const facetSchema = registry.register(
     kind: z.enum(['ATTRIBUTE', 'BRAND', 'PRICE', 'AVAILABILITY', 'RATING', 'FLAG']),
     label: z.string(),
     attributeId: z.string().nullable(),
-    values: z.array(anyObject),
+    values: z
+      .array(anyObject)
+      .describe('Attribute values carry swatchMediaId and swatchImage (PublicImage | null)'),
     minPaise: z.number().int().optional(),
     maxPaise: z.number().int().optional(),
     buckets: z.array(anyObject).optional(),
@@ -216,6 +220,7 @@ registry.registerPath({
   path: `${API_PREFIX}/catalog/products/{slug}/options`,
   tags: ['Storefront'],
   summary: 'Option availability matrix',
+  description: 'Every option value carries swatchMediaId and swatchImage (PublicImage | null).',
   request: { params: slugParamSchema, query: optionsQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(anyObject), 'Availability per option value'),
@@ -258,6 +263,10 @@ registry.registerPath({
   path: `${API_PREFIX}/catalog/categories/{slug}/landing`,
   tags: ['Storefront'],
   summary: 'Category landing page: banner, children, facet defaults, featured products, SEO',
+  description:
+    '`category.bannerMedia` and `category.mobileBannerMedia` (DESKTOP, MOBILE, LARGE, XLARGE) and ' +
+    'each child\u2019s `iconMediaId` and `iconMedia` (SMALL, MEDIUM) are PublicImages or null, ' +
+    'next to the unchanged media ids.',
   request: { params: slugParamSchema, query: storefrontListQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(anyObject), 'Category landing payload'),
@@ -271,6 +280,9 @@ registry.registerPath({
   path: `${API_PREFIX}/catalog/collections`,
   tags: ['Storefront'],
   summary: 'Active collections',
+  description:
+    'Each collection: `image` (MEDIUM, LARGE), `banner` and `mobileBanner` (DESKTOP, MOBILE, ' +
+    'LARGE) as PublicImages or null, next to the unchanged media ids.',
   request: { query: collectionListQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(z.array(anyObject)), 'Collections'),
@@ -283,6 +295,7 @@ registry.registerPath({
   path: `${API_PREFIX}/catalog/collections/{slug}`,
   tags: ['Storefront'],
   summary: 'One collection and its products',
+  description: '`collection` has the same `image`, `banner` and `mobileBanner` as the list.',
   request: { params: slugParamSchema, query: storefrontListQuerySchema },
   responses: {
     200: jsonContent(successBodySchema(anyObject), 'Collection with products'),

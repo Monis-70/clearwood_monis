@@ -10,6 +10,7 @@ import {
   navigationMenuKeySchema,
   navigationNodeBaseSchema,
   navigationParamsSchema,
+  publicImageDtoSchema,
   resolvedCategoryAttributeDtoSchema,
 } from '@shared/schemas/catalog';
 import { slugParamSchema } from '@shared/schemas/common';
@@ -37,6 +38,9 @@ import { asyncHandler, validate } from '../middleware';
 const recursiveChildren = (label: string) =>
   z.array(z.record(z.any())).openapi({ description: `Nested ${label}[] — same shape, recursive` });
 
+/** PROJECT_CONTEXT §51: an image resolved from a media id, URLs from the storage driver. */
+const publicImageSchema = registry.register('PublicImage', publicImageDtoSchema);
+
 const categoryNodeSchema = registry.register(
   'CategoryNode',
   categoryNodeBaseSchema.extend({ children: recursiveChildren('CategoryNode') }),
@@ -48,6 +52,8 @@ const categoryDetailSchema = registry.register(
     description: z.string().nullable(),
     bannerMediaId: z.string().nullable(),
     mobileBannerMediaId: z.string().nullable(),
+    bannerMedia: publicImageSchema.nullable(),
+    mobileBannerMedia: publicImageSchema.nullable(),
     seoTitle: z.string().nullable(),
     seoDescription: z.string().nullable(),
     seoKeywords: z.string().nullable(),

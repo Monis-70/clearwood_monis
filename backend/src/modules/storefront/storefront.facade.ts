@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 
+import type { Collection } from '@prisma/client';
+
+import { PUBLIC_IMAGE_RENDITIONS } from '@shared/constants';
 import type { PaginationInput } from '@shared/types/api';
 import type {
   CollectionListQuery,
@@ -23,6 +26,11 @@ import { storefrontRepository } from '../../repositories/storefront.repository';
 import { categoryService } from '../../services/category.service';
 import { AppError } from '../../utils/AppError';
 import { STOREFRONT_CACHE_PREFIXES } from '../catalog-admin/catalogCache.service';
+import {
+  publicImageService,
+  type ImageRequest,
+  type PublicImages,
+} from '../media/publicImage.service';
 
 import { toProductCard } from './card.mapper';
 import { facetService } from './facet.service';
@@ -87,6 +95,57 @@ export function listingCacheKey(query: StorefrontListQuery, audience: string | n
 export interface ListOptions {
   /** The landing caches its whole payload, so its inner grid is not cached twice. */
   cache?: boolean;
+}
+
+type CollectionRow = Pick<
+  Collection,
+  | 'id'
+  | 'slug'
+  | 'name'
+  | 'type'
+  | 'description'
+  | 'imageMediaId'
+  | 'bannerMediaId'
+  | 'mobileBannerMediaId'
+  | 'startsAt'
+  | 'endsAt'
+  | 'lastEvaluatedAt'
+>;
+
+/** Every collection's image and banners, for one statement (PROJECT_CONTEXT §51). */
+function collectionImageRequests(rows: CollectionRow[]): ImageRequest[] {
+  return [
+    { ids: rows.map((row) => row.imageMediaId), labels: PUBLIC_IMAGE_RENDITIONS.collectionImage },
+    {
+      ids: rows.flatMap((row) => [row.bannerMediaId, row.mobileBannerMediaId]),
+      labels: PUBLIC_IMAGE_RENDITIONS.collectionBanner,
+    },
+  ];
+}
+
+function toCollectionDto(
+  row: CollectionRow,
+  productCount: number,
+  images: PublicImages,
+): CollectionDto {
+  const { collectionImage, collectionBanner } = PUBLIC_IMAGE_RENDITIONS;
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    type: row.type,
+    description: row.description,
+    imageMediaId: row.imageMediaId,
+    bannerMediaId: row.bannerMediaId,
+    mobileBannerMediaId: row.mobileBannerMediaId,
+    image: images.get(row.imageMediaId, collectionImage),
+    banner: images.get(row.bannerMediaId, collectionBanner),
+    mobileBanner: images.get(row.mobileBannerMediaId, collectionBanner),
+    productCount,
+    startsAt: row.startsAt?.toISOString() ?? null,
+    endsAt: row.endsAt?.toISOString() ?? null,
+    lastEvaluatedAt: row.lastEvaluatedAt?.toISOString() ?? null,
+  };
 }
 
 export const storefrontFacade = {
@@ -216,7 +275,8 @@ export const storefrontFacade = {
     identity: ListingIdentity,
     query: StorefrontListQuery,
   ): Promise<CategoryLandingDto> {
-    const detail = await categoryService.getBySlug(slug);
+    // The landing resolves its own renditions (banner and tile sets), in one statement.
+    const detail = await categoryService.getBySlug(slug, { resolveMedia: false });
 
     const scoped: StorefrontListQuery = {
       ...query,
@@ -227,7 +287,13 @@ export const storefrontFacade = {
       includeFacets: false,
     };
 
-    const [featured, facetDefaults] = await Promise.all([
+    const { banner, categoryTile } = PUBLIC_IMAGE_RENDITIONS;
+    // Images first: a cold swatch map is read in their statement, and the cards and facets join it.
+    const [images, featured, facetDefaults] = await Promise.all([
+      publicImageService.loadWithSwatches([
+        { ids: [detail.bannerMediaId, detail.mobileBannerMediaId], labels: banner },
+        { ids: detail.children.map((child) => child.iconMediaId), labels: categoryTile },
+      ]),
       this.listProducts(scoped, identity, { cache: false }),
       this.filters({ ...scoped, limit: 1 }, identity),
     ]);
@@ -239,6 +305,8 @@ export const storefrontFacade = {
       kind: child.kind,
       leadFormKey: child.leadFormKey,
       productCount: child.productCountCache,
+      iconMediaId: child.iconMediaId,
+      iconMedia: images.get(child.iconMediaId, categoryTile),
     }));
 
     const landing: CategoryLandingDto = {
@@ -254,6 +322,8 @@ export const storefrontFacade = {
         shortDescription: detail.shortDescription,
         bannerMediaId: detail.bannerMediaId,
         mobileBannerMediaId: detail.mobileBannerMediaId,
+        bannerMedia: images.get(detail.bannerMediaId, banner),
+        mobileBannerMedia: images.get(detail.mobileBannerMediaId, banner),
       },
       breadcrumbs: detail.breadcrumbs.map((crumb) => ({
         slug: crumb.slug,
@@ -285,23 +355,10 @@ export const storefrontFacade = {
 
   async collections(query: CollectionListQuery): Promise<CollectionDto[]> {
     const rows = await storefrontRepository.findActiveCollections();
+    const shown = rows.filter((row) => query.includeEmpty || row._count.products > 0);
+    const images = await publicImageService.load(collectionImageRequests(shown));
 
-    return rows
-      .filter((row) => query.includeEmpty || row._count.products > 0)
-      .map((row) => ({
-        id: row.id,
-        slug: row.slug,
-        name: row.name,
-        type: row.type,
-        description: row.description,
-        imageMediaId: row.imageMediaId,
-        bannerMediaId: row.bannerMediaId,
-        mobileBannerMediaId: row.mobileBannerMediaId,
-        productCount: row._count.products,
-        startsAt: row.startsAt?.toISOString() ?? null,
-        endsAt: row.endsAt?.toISOString() ?? null,
-        lastEvaluatedAt: row.lastEvaluatedAt?.toISOString() ?? null,
-      }));
+    return shown.map((row) => toCollectionDto(row, row._count.products, images));
   },
 
   async collectionBySlug(
@@ -312,26 +369,14 @@ export const storefrontFacade = {
     const collection = await storefrontRepository.findCollectionBySlug(slug);
     if (!collection) throw AppError.notFound(`Collection "${slug}" not found`, { slug });
 
-    const products = await this.listProducts({ ...query, collectionSlug: slug }, identity);
-    const productCount = await storefrontRepository.countCollectionProducts(collection.id);
+    // Images first, as on a landing: a cold swatch map is read in their statement.
+    const [images, products, productCount] = await Promise.all([
+      publicImageService.loadWithSwatches(collectionImageRequests([collection])),
+      this.listProducts({ ...query, collectionSlug: slug }, identity),
+      storefrontRepository.countCollectionProducts(collection.id),
+    ]);
 
-    return {
-      collection: {
-        id: collection.id,
-        slug: collection.slug,
-        name: collection.name,
-        type: collection.type,
-        description: collection.description,
-        imageMediaId: collection.imageMediaId,
-        bannerMediaId: collection.bannerMediaId,
-        mobileBannerMediaId: collection.mobileBannerMediaId,
-        productCount,
-        startsAt: collection.startsAt?.toISOString() ?? null,
-        endsAt: collection.endsAt?.toISOString() ?? null,
-        lastEvaluatedAt: collection.lastEvaluatedAt?.toISOString() ?? null,
-      },
-      products,
-    };
+    return { collection: toCollectionDto(collection, productCount, images), products };
   },
 
   /** Recently-viewed strips and the compare tray: many slugs, one round trip. */
@@ -345,10 +390,11 @@ export const storefrontFacade = {
     const rows = [...bySlug.filter((row) => row !== null), ...byId];
     const unique = [...new Map(rows.map((row) => [row.id, row])).values()];
 
-    const [prices, indexed, merchandising] = await Promise.all([
+    const [prices, indexed, merchandising, swatchImages] = await Promise.all([
       productQueryService.resolveDisplayPrices(unique, identity),
       productQueryService.priceIndex(unique.map((row) => row.id)),
       loadMerchandising(),
+      publicImageService.swatchesForCards(unique),
     ]);
 
     return unique.map((row) =>
@@ -359,6 +405,7 @@ export const storefrontFacade = {
           indexed: indexed.get(row.id) ?? { minPricePaise: null, maxPricePaise: null },
         },
         merchandising,
+        swatchImages,
       ),
     );
   },

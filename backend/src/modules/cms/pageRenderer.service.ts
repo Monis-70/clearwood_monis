@@ -12,12 +12,14 @@ import {
 import { categoryService } from '../../services/category.service';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { AppError } from '../../utils/AppError';
+import { publicImageService } from '../media/publicImage.service';
 import { toProductCard } from '../storefront/card.mapper';
 import { loadMerchandising } from '../storefront/merchandising';
 import { productQueryService } from '../storefront/productQuery.service';
 
 import { bannerService } from './banner.service';
 import { cmsCacheService } from './cmsCache.service';
+import { storeService } from './content.service';
 import { pageService } from './page.service';
 
 const blockConfig = jsonColumn<Record<string, unknown>>(undefined, 'PageBlock.configJson');
@@ -266,7 +268,8 @@ export const pageRendererService = {
 
     /*
      * Phase 2 — membership lookups (product ids before cards), and the rows blocks show directly,
-     * whose own media ids (icons, banners, avatars, logos) must reach the one media query below.
+     * whose own media ids (icons, banners, avatars, logos, store photos) must reach the one media
+     * query below.
      */
     const [
       collectionMembers,
@@ -276,6 +279,7 @@ export const pageRendererService = {
       testimonials,
       stores,
       brands,
+      banners,
     ] = await Promise.all([
       cmsHydrationRepository.collectionMembers([...want.collections], want.perCollection),
       cmsHydrationRepository.categoryMembers([...want.categories], want.perCategory),
@@ -286,6 +290,9 @@ export const pageRendererService = {
         : Promise.resolve([]),
       want.needsStores ? cmsHydrationRepository.stores() : Promise.resolve([]),
       cmsHydrationRepository.brandsByIds([...want.brands]),
+      want.bannerPlacements.size > 0
+        ? bannerService.forPlacements([...want.bannerPlacements], device, now)
+        : Promise.resolve([]),
     ]);
 
     for (const id of [
@@ -293,6 +300,8 @@ export const pageRendererService = {
       ...collections.map((row) => row.bannerMediaId),
       ...testimonials.map((row) => row.avatarMediaId),
       ...brands.map((row) => row.logoMediaId),
+      ...stores.flatMap((row) => storeService.mediaIdsOf(row)),
+      ...bannerService.mediaIdsOf(banners),
     ]) {
       if (id) want.media.add(id);
     }
@@ -318,14 +327,11 @@ export const pageRendererService = {
     /* Phase 3 — every remaining entity the page needs, in parallel batches. */
     const productIds = [...want.products];
 
-    const [cards, media, faqsById, faqsByVisibility, banners] = await Promise.all([
+    const [cards, media, faqsById, faqsByVisibility] = await Promise.all([
       productIds.length > 0 ? storefrontRepository.findCards(productIds) : Promise.resolve([]),
       cmsHydrationRepository.mediaByIds([...want.media]),
       cmsHydrationRepository.faqsByIds([...want.faqs]),
       cmsHydrationRepository.faqsByVisibility([...want.faqVisibilities], want.faqLimit),
-      want.bannerPlacements.size > 0
-        ? bannerService.forPlacements([...want.bannerPlacements], device, now)
-        : Promise.resolve([]),
     ]);
 
     /* Phase 4 — one batched quote for every product on the page (P6 is the only price path). */
@@ -335,10 +341,11 @@ export const pageRendererService = {
     const liveCategories = categoryRows.length > 0 ? await categoryService.liveIds() : null;
     const categories = categoryRows.filter((row) => liveCategories?.has(row.id));
 
-    const [displayPrices, pricingBasis, merchandising] = await Promise.all([
+    const [displayPrices, pricingBasis, merchandising, swatchImages] = await Promise.all([
       productQueryService.resolveDisplayPrices(cards as ProductCardRow[], identity),
       productQueryService.pricingBasis(identity.customerId),
       loadMerchandising(now),
+      publicImageService.swatchesForCards(cards as ProductCardRow[]),
     ]);
 
     const cardById = new Map(
@@ -351,11 +358,14 @@ export const pageRendererService = {
             indexed: { minPricePaise: null, maxPricePaise: null },
           },
           merchandising,
+          swatchImages,
         ),
       ]),
     );
 
     const mediaById = new Map(media.map((row) => [row.id, row]));
+    // Banners and store photos use the public image shape, from the same rows (§51).
+    const images = publicImageService.fromCmsRows(media);
     const categoryById = new Map(categories.map((row) => [row.id, row]));
     const collectionById = new Map(collections.map((row) => [row.id, row]));
     const faqById = new Map(faqsById.map((row) => [row.id, row]));
@@ -383,7 +393,7 @@ export const pageRendererService = {
                 mobileMedia: mediaDto(mediaById.get(String(entry.mobileMediaId))),
               };
             }),
-            banners,
+            banners: banners.map((banner) => bannerService.toDto(banner, images)),
           };
           break;
 
@@ -469,7 +479,7 @@ export const pageRendererService = {
           break;
 
         case 'STORE_LOCATOR':
-          data = { stores };
+          data = { stores: stores.map((store) => storeService.withImages(store, images)) };
           break;
 
         case 'BRAND_STRIP':

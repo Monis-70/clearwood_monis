@@ -12,6 +12,7 @@ import type {
   StockStatus,
   Visibility,
 } from '../enums';
+import type { PublicImageDto } from './storefront';
 
 /**
  * Catalog DTOs — the single shape the API returns and both frontends consume.
@@ -102,6 +103,7 @@ export interface CategoryNode {
   isFeatured: boolean;
   shortDescription: string | null;
   iconMediaId: string | null;
+  iconMedia: PublicImageDto | null;
   productCountCache: number;
   children: CategoryNode[];
 }
@@ -110,6 +112,8 @@ export interface CategoryDetail extends Omit<CategoryNode, 'children'> {
   description: string | null;
   bannerMediaId: string | null;
   mobileBannerMediaId: string | null;
+  bannerMedia: PublicImageDto | null;
+  mobileBannerMedia: PublicImageDto | null;
   seoTitle: string | null;
   seoDescription: string | null;
   seoKeywords: string | null;
@@ -207,6 +211,7 @@ export interface NavigationNode {
   collectionSlug: string | null;
   leadFormKey: string | null;
   iconMediaId: string | null;
+  icon: PublicImageDto | null;
   menuColumn: number | null;
   openInNewTab: boolean;
   children: NavigationNode[];

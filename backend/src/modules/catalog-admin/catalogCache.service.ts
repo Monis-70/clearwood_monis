@@ -13,6 +13,7 @@ import { catalogEvents } from '../../events/catalogEvents';
  *   cat:tree:*     category trees (CategoryService.getTree)
  *   cat:slug:*     single category detail (CategoryService.getBySlug)
  *   cat:attrs:*    resolved category attributes (CategoryAttributeService)
+ *   attr:swatch:*  every attribute value's swatch image, resolved (publicImageService, §51)
  *   nav:*          navigation menus (NavigationService)
  *   prod:*         product detail/list caches (Prompt 7)
  *   coll:*         collection caches (Prompt 7)
@@ -35,6 +36,7 @@ export const CATALOG_CACHE_PREFIXES = {
   categoryTree: 'cat:tree:',
   category: 'cat:slug:',
   categoryAttributes: 'cat:attrs:',
+  attributeSwatches: 'attr:swatch:',
   navigation: 'nav:',
   product: 'prod:',
   collection: 'coll:',
@@ -170,7 +172,11 @@ export const catalogCacheService = {
    * anything may have changed.
    */
   async invalidateAttributes(affects?: string | 'structure'): Promise<void> {
-    await drop(CATALOG_CACHE_PREFIXES.categoryAttributes, CATALOG_CACHE_PREFIXES.product);
+    await drop(
+      CATALOG_CACHE_PREFIXES.categoryAttributes,
+      CATALOG_CACHE_PREFIXES.attributeSwatches,
+      CATALOG_CACHE_PREFIXES.product,
+    );
     await dropStorefront();
     catalogEvents.emit('attribute.changed', {
       reason: 'attribute-write',
@@ -307,14 +313,39 @@ export const catalogCacheService = {
     await drop(...mediaBearingPrefixes([productSlug]));
   },
 
-  /** An asset's bytes, alt text or visibility changed; `productSlugs` are the products showing it. */
-  async invalidateMedia(productSlugs: string[]): Promise<void> {
-    const productPayloads =
+  /**
+   * An asset's bytes, alt text or visibility changed. `productSlugs` are the products showing it;
+   * `referencedBy` says which id-only references resolve it (§51), whose payloads embed its URLs.
+   */
+  async invalidateMedia(
+    productSlugs: string[],
+    referencedBy: { category?: boolean; navigation?: boolean; swatch?: boolean } = {},
+  ): Promise<void> {
+    const prefixes =
       productSlugs.length > 0
         ? mediaBearingPrefixes(productSlugs)
         : [CATALOG_CACHE_PREFIXES.cmsPage];
+    if (referencedBy.category) {
+      // Trees and details carry icons and banners; landings live under the listing prefix.
+      prefixes.push(
+        CATALOG_CACHE_PREFIXES.categoryTree,
+        CATALOG_CACHE_PREFIXES.category,
+        CATALOG_CACHE_PREFIXES.storefrontListing,
+      );
+    }
+    if (referencedBy.navigation) prefixes.push(CATALOG_CACHE_PREFIXES.navigation);
+    if (referencedBy.swatch) {
+      prefixes.push(
+        CATALOG_CACHE_PREFIXES.attributeSwatches,
+        CATALOG_CACHE_PREFIXES.storefrontListing,
+        CATALOG_CACHE_PREFIXES.storefrontFacets,
+        CATALOG_CACHE_PREFIXES.storefrontPdp,
+      );
+    }
     // CMS pages and banners can show any asset directly.
-    await drop(...productPayloads, CATALOG_CACHE_PREFIXES.cmsBanner);
+    await drop(
+      ...new Set([...prefixes, CATALOG_CACHE_PREFIXES.cmsPage, CATALOG_CACHE_PREFIXES.cmsBanner]),
+    );
   },
 
   /**

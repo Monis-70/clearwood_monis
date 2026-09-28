@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import { API_PREFIX } from '@shared/constants';
+import { publicImageDtoSchema } from '@shared/schemas/catalog';
 import { idParamSchema } from '@shared/schemas/common';
 import {
   announcementCreateSchema,
@@ -99,6 +100,12 @@ const bannerSchema = registry.register(
       name: z.string(),
       placement: z.string().openapi({ example: 'HOME_HERO' }),
       position: z.number().int(),
+      mediaId: z.string().nullable(),
+      mobileMediaId: z.string().nullable(),
+      media: publicImageDtoSchema
+        .nullable()
+        .describe('DESKTOP, MOBILE, LARGE and XLARGE renditions (PROJECT_CONTEXT \u00a751)'),
+      mobileMedia: publicImageDtoSchema.nullable(),
     })
     .passthrough(),
 );

@@ -1,10 +1,12 @@
 import type { Category } from '@prisma/client';
 
+import { PUBLIC_IMAGE_RENDITIONS } from '@shared/constants';
 import { BROWSE_VISIBILITIES, isRuleCategoryKind, type CategoryKind } from '@shared/enums';
 import type { CategoryTreeQuery } from '@shared/schemas/catalog';
 import type { CategoryBreadcrumbDto, CategoryDetail, CategoryNode } from '@shared/types/catalog';
 
 import { cache } from '../container';
+import { publicImageService, type PublicImages } from '../modules/media/publicImage.service';
 import { loadMerchandising } from '../modules/storefront/merchandising';
 import { categoryRepository } from '../repositories/category.repository';
 import { listingRepository } from '../repositories/listing.repository';
@@ -45,7 +47,7 @@ export function liveCategoryIds(
   return new Set(rows.filter((row) => isLive(row.id, new Set())).map((row) => row.id));
 }
 
-function toNode(row: Category): CategoryNode {
+function toNode(row: Category, images: PublicImages): CategoryNode {
   return {
     id: row.id,
     name: row.name,
@@ -62,14 +64,15 @@ function toNode(row: Category): CategoryNode {
     isFeatured: row.isFeatured,
     shortDescription: row.shortDescription,
     iconMediaId: row.iconMediaId,
+    iconMedia: images.get(row.iconMediaId, PUBLIC_IMAGE_RENDITIONS.icon),
     productCountCache: row.productCountCache,
     children: [],
   };
 }
 
-function nest(rows: Category[]): CategoryNode[] {
+function nest(rows: Category[], images: PublicImages): CategoryNode[] {
   const nodes = new Map<string, CategoryNode>();
-  for (const row of rows) nodes.set(row.id, toNode(row));
+  for (const row of rows) nodes.set(row.id, toNode(row, images));
 
   const roots: CategoryNode[] = [];
   for (const row of rows) {
@@ -108,11 +111,22 @@ export const categoryService = {
         includeInactive: query.includeInactive,
         ...(query.depth === undefined ? {} : { maxDepth: query.depth - 1 }),
       });
-      return nest(rows);
+      const images = await publicImageService.load([
+        { ids: rows.map((row) => row.iconMediaId), labels: PUBLIC_IMAGE_RENDITIONS.icon },
+      ]);
+      return nest(rows, images);
     });
   },
 
-  async getBySlug(slug: string, includeInactive = false): Promise<CategoryDetail> {
+  /**
+   * `resolveMedia: false` leaves every image null for a caller that resolves its own renditions
+   * (the landing page), so the statement is not paid twice.
+   */
+  async getBySlug(
+    slug: string,
+    options: { includeInactive?: boolean; resolveMedia?: boolean } = {},
+  ): Promise<CategoryDetail> {
+    const { includeInactive = false, resolveMedia = true } = options;
     const category = await categoryRepository.findBySlug(slug, includeInactive);
     if (!category) throw AppError.notFound(`Category "${slug}" not found`, { slug });
 
@@ -139,12 +153,27 @@ export const categoryService = {
       return row ? [{ id: row.id, name: row.name, slug: row.slug, depth: row.depth }] : [];
     });
 
+    const images = resolveMedia
+      ? await publicImageService.load([
+          {
+            ids: [category, ...children].map((row) => row.iconMediaId),
+            labels: PUBLIC_IMAGE_RENDITIONS.icon,
+          },
+          {
+            ids: [category.bannerMediaId, category.mobileBannerMediaId],
+            labels: PUBLIC_IMAGE_RENDITIONS.banner,
+          },
+        ])
+      : publicImageService.none;
+
     return {
-      ...toNode(category),
-      children: children.map(toNode),
+      ...toNode(category, images),
+      children: children.map((child) => toNode(child, images)),
       description: category.description,
       bannerMediaId: category.bannerMediaId,
       mobileBannerMediaId: category.mobileBannerMediaId,
+      bannerMedia: images.get(category.bannerMediaId, PUBLIC_IMAGE_RENDITIONS.banner),
+      mobileBannerMedia: images.get(category.mobileBannerMediaId, PUBLIC_IMAGE_RENDITIONS.banner),
       seoTitle: category.seoTitle,
       seoDescription: category.seoDescription,
       seoKeywords: category.seoKeywords,

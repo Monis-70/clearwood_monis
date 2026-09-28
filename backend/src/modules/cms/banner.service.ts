@@ -1,3 +1,6 @@
+import type { Banner } from '@prisma/client';
+
+import { PUBLIC_IMAGE_RENDITIONS } from '@shared/constants';
 import type {
   AnnouncementCreateInput,
   AnnouncementUpdateInput,
@@ -18,6 +21,7 @@ import { updateVersioned } from '../../repositories/versioned';
 import { AppError } from '../../utils/AppError';
 import { jsonColumn } from '../../utils/jsonColumn';
 import { mediaUsageService } from '../media/media-usage.service';
+import { publicImageService, type PublicImages } from '../media/publicImage.service';
 
 import { cmsCacheService } from './cmsCache.service';
 
@@ -125,7 +129,7 @@ export const bannerService = {
   ) {
     const rows = await bannerRepository.liveForPlacements([placement], now);
 
-    return rows
+    const live = rows
       .filter((banner) => matchesDevice(banner.deviceVisibility, device))
       .filter((banner) => {
         const categories = idList.parseOrNull(banner.targetCategoryIdsJson);
@@ -143,28 +147,38 @@ export const bannerService = {
         }
 
         return true;
-      })
-      .map((banner) => this.toDto(banner));
+      });
+
+    const images = await publicImageService.load([
+      { ids: this.mediaIdsOf(live), labels: PUBLIC_IMAGE_RENDITIONS.banner },
+    ]);
+    return live.map((banner) => this.toDto(banner, images));
   },
 
-  /** Several placements in one query, for the page renderer's fixed query budget. */
+  /**
+   * Several placements in one query, for the page renderer's fixed query budget. Rows, not DTOs:
+   * the renderer resolves their media inside the page's one media query.
+   */
   async forPlacements(placements: string[], device: DeviceKind, now = new Date()) {
     const rows = await bannerRepository.liveForPlacements(placements, now);
-
-    return rows
-      .filter((banner) => matchesDevice(banner.deviceVisibility, device))
-      .map((banner) => this.toDto(banner));
+    return rows.filter((banner) => matchesDevice(banner.deviceVisibility, device));
   },
 
-  toDto(banner: Awaited<ReturnType<typeof bannerRepository.findById>>) {
-    if (!banner) return null;
+  mediaIdsOf(banners: { mediaId: string | null; mobileMediaId: string | null }[]): string[] {
+    return banners.flatMap((banner) =>
+      [banner.mediaId, banner.mobileMediaId].filter((id): id is string => id !== null),
+    );
+  },
 
+  toDto(banner: Banner, images: PublicImages) {
     return {
       id: banner.id,
       name: banner.name,
       placement: banner.placement,
       mediaId: banner.mediaId,
       mobileMediaId: banner.mobileMediaId,
+      media: images.get(banner.mediaId, PUBLIC_IMAGE_RENDITIONS.banner),
+      mobileMedia: images.get(banner.mobileMediaId, PUBLIC_IMAGE_RENDITIONS.banner),
       altText: banner.altText,
       headline: banner.headline,
       subheadline: banner.subheadline,
