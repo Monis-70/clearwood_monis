@@ -100,6 +100,15 @@ passing tests) and **R12** (nothing earlier broken) are both satisfied.
   - Typed product relationships (RELATED, SIMILAR, ALTERNATIVE, REPLACEMENT, COMPLEMENTARY,
     FREQUENTLY_BOUGHT, ...) with PDP `relationGroups`; `/related?type=` never falls back.
   - Contract work refused on every product write path; `kind`/`leadFormKey` on tree and landing.
+- [x] **Storefront media contract (Prompt 02A)** (PROJECT_CONTEXT §51)
+  - No migration. CMS media and every rendition carry storage-driver URLs (BC-1); cards gain the
+    first generic HOVER image and a SQUARE rendition (BC-2, BC-2b: +32.9% gzip on 24 cards).
+  - Content settings accept lists, such as `site.usp_lines` (BC-10).
+  - Every public id-only media reference resolves to a `PublicImageDto`: category banners and
+    icons, collection images, banners, swatches, navigation icons, store photos, avatars (BC-3).
+    At most one statement per response; a media write drops the cached payloads that embed it.
+  - Still open: admin fields for category, collection and swatch images (the API accepts them),
+    and a picker instead of the raw "Photo IDs" box for store photos.
 - [ ] **Prompt 10B — Lead forms** _(next)_ — builds on the `Enquiry` foundation
 - [ ] **Prompt 11 — "Make your own" configurator**
 - [ ] **Prompt 12 — Frontend scaffold & design system**

@@ -703,7 +703,7 @@ npx vitest run tests/catalog-listing-benchmark.test.ts
 | Create a price rule starting in two minutes, wait, `sort=PRICE_ASC` | within `LISTING_RECONCILE_INTERVAL_SECONDS` of its start the order follows the new price, with no admin write                  |
 | `npm run listing:reconcile` twice at once                           | one prints `"ran":true`, the other `"ran":false` (or both true, one after the other - never overlapping)                       |
 | Reserve the last unit of a variant                                  | it leaves `inStockOnly` grids at once; a release brings it back                                                                |
-| A grid page's `image.sources`                                       | SMALL, MEDIUM and SQUARE renditions only (PROJECT_CONTEXT §51); the PDP gallery keeps every rendition                         |
+| A grid page's `image.sources`                                       | SMALL, MEDIUM and SQUARE renditions only (PROJECT_CONTEXT §51); the PDP gallery keeps every rendition                          |
 
 ## Dynamic catalog + admin catalog management — verification
 
@@ -745,6 +745,27 @@ Requests in `docs/api/05c-catalog-hardening.http`.
 | File a product under `custom-hotel-furniture`                                          | 422 `CATEGORY_NOT_PURCHASABLE` (admin, bulk and import alike)                                      |
 | `GET /catalog/categories/contract-based-work/landing`                                  | `category.kind: SERVICE`, `leadFormKey: contract-work`, no products                                |
 | Turn the SALE badge off in catalog settings                                            | it leaves cards, the PDP, search results and cached CMS product blocks at once                     |
+
+## Storefront media contract (Prompt 02A) — verification
+
+```powershell
+cd backend
+npx vitest run tests/storefront-media-contract.test.ts tests/cms-seo-navigation.test.ts tests/query-budgets.test.ts tests/api.test.ts
+$env:CLEARWOOD_MEDIA_MEASURE="1"; $env:CLEARWOOD_MEDIA_MEASURE_OUT="$env:TEMP\media-measure.json"
+npx vitest run tests/media-contract-measure.test.ts   # statements and bytes per path, cold, seed and media
+```
+
+Contract and measurements in PROJECT_CONTEXT §51; requests in `docs/api/07-storefront.http` (6a, 6b,
+10-11b) and `docs/api/10a-cms.http`.
+
+| Do this                                                                                    | You should see                                                                                          |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/content/home`                                                                 | every media object and every `sources[]` entry carries an absolute `url` from the storage driver        |
+| `GET /api/v1/catalog/products?limit=24`                                                    | each card has `image` and `hoverImage` (or `null`), both with SMALL, MEDIUM and SQUARE sources          |
+| `PUT /api/v1/admin/content/settings` `{"site.usp_lines": ["Made in-house", "Solid wood"]}` | `GET /api/v1/settings/public` returns the same array; a list for a string setting is 422 naming the key |
+| `PATCH /api/v1/admin/catalog/categories/:id` with `bannerMediaId` and `iconMediaId`        | its landing's `category.bannerMedia`, the tree's `iconMedia`: resolved images, ids unchanged            |
+| Replace that image in the media library                                                    | the next landing and tree read shows the new URL, with no cache flush                                   |
+| Soft-delete it                                                                             | the image fields turn `null`; the `*MediaId` fields keep the id                                         |
 
 ---
 

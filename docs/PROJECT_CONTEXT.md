@@ -2821,6 +2821,44 @@ unset id. Every URL comes from `storage.url()`. Which renditions each slot carri
   exactly its slot's renditions; ids unchanged; the statements each path adds; replacing, deleting
   and restoring an asset show on the next public read without a manual cache drop.
 
+### Measured
+
+`tests/media-contract-measure.test.ts` (opt-in: `CLEARWOOD_MEDIA_MEASURE=1`, plus
+`CLEARWOOD_MEDIA_MEASURE_OUT=<file>` for a JSON report) reads every path COLD, with each catalog
+cache dropped except pricing and settings: first on the seed, then with a READY image on every
+reference BC-3 resolves ("media": root and child category icons, the landing's banners, every
+collection's images, main-menu icons, swatches, store photos, avatars, banner mobile images).
+Statements come from the query counter and match `x-query-count`; bytes are the JSON body. Before
+is `main` at `c553f92`, after is this change.
+
+| Path (cold)                            | Statements seed | Statements media | Raw seed                  | Gzip seed                | Raw media                  | Gzip media               |
+| -------------------------------------- | --------------- | ---------------- | ------------------------- | ------------------------ | -------------------------- | ------------------------ |
+| `/catalog/products?limit=24`           | 30 → 30         | 30 → 31          | 77,688 → 126,645 (+63.0%) | 11,943 → 15,868 (+32.9%) | 79,551 → 186,909 (+135.0%) | 11,983 → 17,178 (+43.4%) |
+| `/catalog/categories/{slug}/landing`   | 43 → 43         | 43 → 44          | 37,839 → 55,912 (+47.8%)  | 6,887 → 8,106 (+17.7%)   | 38,621 → 98,368 (+154.7%)  | 6,940 → 9,413 (+35.6%)   |
+| `/catalog/categories/{slug}`           | 10 → 10         | 10 → 11          | 24,761 → 25,179 (+1.7%)   | 4,389 → 4,421 (+0.7%)    | 25,589 → 51,903 (+102.8%)  | 4,479 → 5,430 (+21.2%)   |
+| `/catalog/categories/tree`             | 1 → 1           | 1 → 2            | 60,923 → 63,643 (+4.5%)   | 6,443 → 6,488 (+0.7%)    | 61,774 → 102,826 (+66.5%)  | 6,492 → 7,327 (+12.9%)   |
+| `/navigation/MAIN`                     | 4 → 4           | 4 → 5            | 54,045 → 56,025 (+3.7%)   | 5,643 → 5,671 (+0.5%)    | 54,183 → 62,379 (+15.1%)   | 5,692 → 6,508 (+14.3%)   |
+| `/catalog/collections`                 | 1 → 1           | 1 → 2            | 1,681 → 1,916 (+14.0%)    | 576 → 591 (+2.6%)        | 2,026 → 16,436 (+711.3%)   | 627 → 1,336 (+113.1%)    |
+| `/catalog/collections/{slug}`          | 33 → 33         | 33 → 34          | 58,233 → 91,315 (+56.8%)  | 9,253 → 11,830 (+27.9%)  | 59,567 → 135,139 (+126.9%) | 9,340 → 13,100 (+40.3%)  |
+| `/content/banners?placement=HOME_HERO` | 1 → 2           | 1 → 2            | 885 → 3,315 (+274.6%)     | 452 → 995 (+120.1%)      | 931 → 6,139 (+559.4%)      | 469 → 1,226 (+161.4%)    |
+| `/content/home`                        | 36 → 36         | 36 → 37          | 94,813 → 158,378 (+67.0%) | 12,483 → 20,108 (+61.1%) | 96,262 → 246,328 (+155.9%) | 12,535 → 22,536 (+79.8%) |
+| `/catalog/products/{slug}`             | 73 → 73         | 73 → 74          | 26,732 → 32,581 (+21.9%)  | 4,722 → 5,133 (+8.7%)    | 26,893 → 37,789 (+40.5%)   | 4,741 → 5,437 (+14.7%)   |
+| `/catalog/products/{slug}/options`     | 35 → 35         | 35 → 36          | 1,200 → 1,238 (+3.2%)     | 464 → 472 (+1.7%)        | 1,223 → 1,982 (+62.1%)     | 484 → 789 (+63.0%)       |
+| `/catalog/filters?categorySlug={slug}` | 12 → 12         | 12 → 13          | 13,721 → 15,298 (+11.5%)  | 2,570 → 2,583 (+0.5%)    | 13,997 → 24,226 (+73.1%)   | 2,590 → 3,020 (+16.6%)   |
+| `/content/stores`                      | 1 → 1           | 1 → 2            | 3,321 → 3,357 (+1.1%)     | 697 → 705 (+1.1%)        | 3,408 → 6,591 (+93.4%)     | 723 → 1,102 (+52.4%)     |
+| `/content/testimonials`                | 1 → 1           | 1 → 2            | 4,314 → 4,426 (+2.6%)     | 1,260 → 1,261 (+0.1%)    | 4,498 → 12,978 (+188.5%)   | 1,261 → 1,701 (+34.9%)   |
+
+- On the seed one count changes: `/content/banners` now resolves the seeded hero images (+1). With
+  media every path adds at most one statement cold, and none warm (the tree, navigation, landing
+  and swatch map are cached). The query budgets, measured on the seed, are unchanged; one more
+  statement fits every ceiling (the tree is then at its ceiling, 2 of 2), so the tree keeps
+  `iconMedia`.
+- The 24-card listing grows 32.9% gzip on the seed: the hover image 26.6%, then `SQUARE` 4.97% on
+  top (15,116 → 15,867 bytes). That is inside the 35% BC-2b budget, so `SQUARE` stays.
+- Most raw growth is absolute URLs and each image's `lqip` data URI, which gzip largely absorbs.
+  The home page grows most on the seed (61.1% gzip): URLs on every CMS source, and cards with a
+  hover image and `SQUARE`.
+
 **Not settable yet** (an admin task the owner must approve): the admin UI has no field for the
 category icon and banners, the collection image and banners, or `SWATCH_IMAGE` attribute values,
 and store photos are a raw "Photo IDs" box. BC-3 makes these images readable, not settable.
